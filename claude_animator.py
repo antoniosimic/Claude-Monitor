@@ -881,19 +881,20 @@ def _keyboard_unix(animator):
                 if ch in ('s', 'S'):
                     animator.toggle_settings()
                 elif ch == '\x1b':
-                    # Escape or arrow key sequence
-                    if select.select([sys.stdin], [], [], 0.05)[0]:
+                    # Escape or arrow key sequence (0.15s timeout for web terminals)
+                    if select.select([sys.stdin], [], [], 0.15)[0]:
                         ch2 = sys.stdin.read(1)
                         if ch2 == '[':
-                            ch3 = sys.stdin.read(1)
-                            if ch3 == 'A':    # Up
-                                animator.settings_up()
-                            elif ch3 == 'B':  # Down
-                                animator.settings_down()
-                            elif ch3 == 'D':  # Left
-                                animator.settings_left()
-                            elif ch3 == 'C':  # Right
-                                animator.settings_right()
+                            if select.select([sys.stdin], [], [], 0.15)[0]:
+                                ch3 = sys.stdin.read(1)
+                                if ch3 == 'A':    # Up
+                                    animator.settings_up()
+                                elif ch3 == 'B':  # Down
+                                    animator.settings_down()
+                                elif ch3 == 'D':  # Left
+                                    animator.settings_left()
+                                elif ch3 == 'C':  # Right
+                                    animator.settings_right()
                     elif animator.show_settings:
                         animator.toggle_settings()
                 elif ch in ('\r', '\n'):
