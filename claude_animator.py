@@ -34,6 +34,9 @@ import os
 import platform
 import shutil
 
+from queue import Queue, Empty
+import http.server
+
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
@@ -514,6 +517,9 @@ class ClaudeAnimator:
 
     def set_event(self, event_type, tool_name="", detail="", extra=None):
         vol = self.config.get("volume", 75)
+
+        # Push all events to browser clients
+        push_web_event(event_type, tool_name, detail)
 
         if event_type == "StatusUpdate" and extra:
             model = extra.get("model", {})
@@ -1032,6 +1038,228 @@ def run_socket_server(animator, port=9876):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  WEB SERVER (browser sound + notifications)
+# ═══════════════════════════════════════════════════════════════
+
+WEB_PORT = 7777
+
+WEB_PAGE = r"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>Claude Monitor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d1117; color: #c9d1d9; font-family: 'Cascadia Code', 'Fira Code', monospace;
+         display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  .container { text-align: center; padding: 2rem; }
+  .logo { color: #f85149; font-size: 2rem; margin-bottom: 1rem; }
+  .status { font-size: 1.5rem; margin: 1rem 0; padding: 1rem 2rem; border-radius: 8px;
+            border: 1px solid #30363d; background: #161b22; min-width: 300px; }
+  .idle { color: #8b949e; }
+  .typing { color: #3fb950; }
+  .tool { color: #d29922; }
+  .done { color: #3fb950; }
+  .asking { color: #d29922; }
+  .tool-name { font-size: 0.9rem; color: #8b949e; margin-top: 0.5rem; }
+  .connected { color: #3fb950; font-size: 0.8rem; margin-top: 1rem; }
+  .disconnected { color: #f85149; font-size: 0.8rem; margin-top: 1rem; }
+  .controls { margin-top: 2rem; }
+  .btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 0.5rem 1rem;
+         border-radius: 6px; cursor: pointer; font-family: inherit; margin: 0.25rem; }
+  .btn:hover { background: #30363d; }
+  .btn.active { border-color: #3fb950; color: #3fb950; }
+  .volume { margin-top: 1rem; color: #8b949e; }
+  .flash { animation: flash 0.5s ease-in-out 3; }
+  @keyframes flash { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+</style>
+</head><body>
+<div class="container">
+  <div class="logo">▐▛█▜▌ Claude Monitor</div>
+  <div class="status idle" id="status">Waiting for connection...</div>
+  <div class="tool-name" id="tool"></div>
+  <div class="controls">
+    <button class="btn active" id="soundBtn" onclick="toggleSound()">🔊 Sound</button>
+    <button class="btn active" id="notifBtn" onclick="toggleNotif()">🔔 Notifications</button>
+    <button class="btn" onclick="testSound()">🎵 Test</button>
+  </div>
+  <div class="volume">Volume: <input type="range" id="vol" min="0" max="100" value="50"
+       oninput="document.getElementById('volLabel').textContent=this.value+'%'">
+       <span id="volLabel">50%</span></div>
+  <div id="conn" class="connected">● Connected</div>
+</div>
+<script>
+let soundEnabled = true, notifEnabled = true;
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function getVol() { return document.getElementById('vol').value / 100 * 0.4; }
+
+function playTone(freq, dur) {
+  if (!soundEnabled) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.type = 'sine'; osc.frequency.value = freq;
+  gain.gain.value = getVol();
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  osc.start(); osc.stop(audioCtx.currentTime + dur);
+}
+
+function playCompletion() {
+  playTone(523, 0.15);
+  setTimeout(() => playTone(659, 0.15), 130);
+  setTimeout(() => playTone(784, 0.25), 260);
+}
+
+function playQuestion() {
+  playTone(784, 0.2);
+  setTimeout(() => playTone(988, 0.3), 200);
+  setTimeout(() => playTone(784, 0.2), 550);
+  setTimeout(() => playTone(988, 0.4), 750);
+}
+
+function testSound() {
+  audioCtx.resume().then(() => playCompletion());
+}
+
+function showNotif(title, body) {
+  if (!notifEnabled || Notification.permission !== 'granted') return;
+  new Notification(title, { body, icon: '🤖' });
+}
+
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  const btn = document.getElementById('soundBtn');
+  btn.textContent = soundEnabled ? '🔊 Sound' : '🔇 Sound';
+  btn.classList.toggle('active', soundEnabled);
+}
+
+function toggleNotif() {
+  notifEnabled = !notifEnabled;
+  const btn = document.getElementById('notifBtn');
+  btn.textContent = notifEnabled ? '🔔 Notifications' : '🔕 Notifications';
+  btn.classList.toggle('active', notifEnabled);
+}
+
+// Request notification permission on first interaction
+document.addEventListener('click', () => {
+  audioCtx.resume();
+  if (Notification.permission === 'default') Notification.requestPermission();
+}, { once: true });
+
+// SSE connection with auto-reconnect
+function connect() {
+  const evtSource = new EventSource('/events');
+  const el = document.getElementById('status');
+  const toolEl = document.getElementById('tool');
+  const connEl = document.getElementById('conn');
+
+  evtSource.onopen = () => {
+    connEl.className = 'connected'; connEl.textContent = '● Connected';
+  };
+
+  evtSource.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    el.className = 'status';
+    toolEl.textContent = '';
+
+    if (d.type === 'UserPromptSubmit') {
+      el.className = 'status typing'; el.textContent = '✎ Generating response...';
+    } else if (d.type === 'Stop') {
+      el.className = 'status done flash'; el.textContent = '✓ Response complete';
+      audioCtx.resume().then(() => playCompletion());
+      showNotif('Claude Monitor', 'Response complete');
+    } else if (d.type === 'PermissionRequest') {
+      el.className = 'status asking flash'; el.textContent = '? Approval needed';
+      toolEl.textContent = d.tool || '';
+      audioCtx.resume().then(() => playQuestion());
+      showNotif('Claude Monitor', 'Approval needed: ' + (d.tool || ''));
+    } else if (d.type === 'PreToolUse') {
+      el.className = 'status tool'; el.textContent = '⚡ ' + (d.detail || d.tool || 'Working...');
+      toolEl.textContent = d.tool || '';
+    } else if (d.type === 'PostToolUse') {
+      el.className = 'status typing'; el.textContent = '✎ Generating response...';
+    } else if (d.type === 'StatusUpdate') {
+      // Ignore status updates in UI
+    }
+  };
+
+  evtSource.onerror = () => {
+    connEl.className = 'disconnected'; connEl.textContent = '● Disconnected - reconnecting...';
+    evtSource.close();
+    setTimeout(connect, 3000);
+  };
+}
+
+connect();
+</script>
+</body></html>
+"""
+
+# SSE client queues
+_sse_queues = []
+
+
+def push_web_event(event_type, tool_name="", detail=""):
+    """Push an event to all connected SSE browser clients."""
+    event = {"type": event_type, "tool": tool_name, "detail": detail}
+    data = json.dumps(event)
+    for q in list(_sse_queues):
+        try:
+            q.put_nowait(data)
+        except Exception:
+            pass
+
+
+class _WebHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(WEB_PAGE.encode("utf-8"))
+        elif self.path == "/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            q = Queue()
+            _sse_queues.append(q)
+            try:
+                while True:
+                    try:
+                        data = q.get(timeout=15)
+                        self.wfile.write(f"data: {data}\n\n".encode())
+                        self.wfile.flush()
+                    except Empty:
+                        # Send keepalive comment
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+            except Exception:
+                pass
+            finally:
+                if q in _sse_queues:
+                    _sse_queues.remove(q)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # Suppress request logs
+
+
+def run_web_server(port=WEB_PORT):
+    """Start the web server for browser-based sound and notifications."""
+    try:
+        server = http.server.HTTPServer(("0.0.0.0", port), _WebHandler)
+        server.serve_forever()
+    except Exception:
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════
 #  STARTUP
 # ═══════════════════════════════════════════════════════════════
 
@@ -1091,8 +1319,12 @@ def main():
 
     threading.Thread(target=run_socket_server, args=(animator,), daemon=True).start()
     threading.Thread(target=keyboard_listener, args=(animator,), daemon=True).start()
+    threading.Thread(target=run_web_server, daemon=True).start()
 
     console = Console()
+    console.print(f"[dim]  Web UI: http://localhost:{WEB_PORT}[/]")
+    console.print(f"[dim]  Open in browser for sound & notifications[/]")
+    time.sleep(1.5)
     console.clear()
 
     try:
