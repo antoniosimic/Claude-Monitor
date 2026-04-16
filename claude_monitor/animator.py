@@ -1091,7 +1091,7 @@ WEB_PAGE = r"""<!DOCTYPE html>
   <div class="volume">Volume: <input type="range" id="vol" min="0" max="100" value="50"
        oninput="document.getElementById('volLabel').textContent=this.value+'%'">
        <span id="volLabel">50%</span></div>
-  <div id="conn" class="connected">● Connected</div>
+  <div id="conn" class="disconnected">● Connecting...</div>
 </div>
 <script>
 let soundEnabled = true, notifEnabled = true;
@@ -1152,10 +1152,12 @@ document.addEventListener('click', () => {
   if (Notification.permission === 'default') Notification.requestPermission();
 }, { once: true });
 
-// WebSocket connection with polling fallback
+// Connection: polling always runs, WebSocket upgrades if available
 const el = document.getElementById('status');
 const toolEl = document.getElementById('tool');
 const connEl = document.getElementById('conn');
+let lastEventId = 0;
+let useWS = false;
 
 function handleEvent(d) {
   el.className = 'status';
@@ -1179,29 +1181,52 @@ function handleEvent(d) {
   }
 }
 
-function connectWS() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = proto + '//' + location.host + location.pathname.replace(/\/$/, '') + '/ws';
-  const ws = new WebSocket(wsUrl);
-
-  ws.onopen = () => {
-    connEl.className = 'connected'; connEl.textContent = '● Connected (WebSocket)';
-  };
-
-  ws.onmessage = (e) => {
-    const d = JSON.parse(e.data);
-    handleEvent(d);
-  };
-
-  ws.onclose = () => {
+// Polling - always works through any proxy
+async function poll() {
+  if (useWS) return; // WebSocket took over
+  try {
+    const base = location.pathname.replace(/\/$/, '');
+    const resp = await fetch(base + '/poll?since=' + lastEventId);
+    if (resp.ok) {
+      connEl.className = 'connected'; connEl.textContent = '● Connected';
+      const events = await resp.json();
+      for (const ev of events) {
+        handleEvent(ev);
+        if (ev.id > lastEventId) lastEventId = ev.id;
+      }
+    }
+  } catch(e) {
     connEl.className = 'disconnected'; connEl.textContent = '● Reconnecting...';
-    setTimeout(connectWS, 2000);
-  };
-
-  ws.onerror = () => { ws.close(); };
+  }
+  if (!useWS) setTimeout(poll, 800);
 }
 
-connectWS();
+// Try WebSocket upgrade (instant if proxy supports it)
+function tryWS() {
+  try {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = proto + '//' + location.host + location.pathname.replace(/\/$/, '') + '/ws';
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      useWS = true;
+      connEl.className = 'connected'; connEl.textContent = '● Connected (WebSocket)';
+    };
+    ws.onmessage = (e) => {
+      const d = JSON.parse(e.data);
+      if (d.id > lastEventId) lastEventId = d.id;
+      handleEvent(d);
+    };
+    ws.onclose = () => {
+      useWS = false;
+      poll(); // Fall back to polling
+      setTimeout(tryWS, 5000); // Retry WS later
+    };
+    ws.onerror = () => { ws.close(); };
+  } catch(e) {} // WebSocket not available, polling continues
+}
+
+poll();
+tryWS();
 </script>
 </body></html>
 """
