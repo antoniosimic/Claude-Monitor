@@ -1226,6 +1226,13 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
 
+            # Flush a large padding block to push past proxy buffers
+            # Many proxies (nginx, GCP) buffer ~4-8KB before forwarding
+            padding = ": " + " " * 4096 + "\n\n"
+            self.wfile.write(padding.encode())
+            self.wfile.write(b"retry: 1000\n\n")
+            self.wfile.flush()
+
             q = Queue()
             _sse_queues.append(q)
             try:
