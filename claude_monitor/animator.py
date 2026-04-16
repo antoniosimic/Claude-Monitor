@@ -84,18 +84,19 @@ DEFAULT_CONFIG = {
     "notifications": True,
     "name": "Claude",
     "theme": "Red",
+    "light_mode": False,
 }
 
 APP_NAME = "Claude Monitor"
 
 THEME_COLORS = {
-    "Red":     {"bright": "bright_red",     "dim": "dim red"},
-    "Blue":    {"bright": "bright_blue",    "dim": "dim blue"},
-    "Green":   {"bright": "bright_green",   "dim": "dim green"},
-    "Yellow":  {"bright": "bright_yellow",  "dim": "dim yellow"},
-    "Magenta": {"bright": "bright_magenta", "dim": "dim magenta"},
-    "Cyan":    {"bright": "bright_cyan",    "dim": "dim cyan"},
-    "White":   {"bright": "bright_white",   "dim": "dim white"},
+    "Red":     {"bright": "bright_red",     "dim": "dim red",     "lbright": "red",          "ldim": "dark_red"},
+    "Blue":    {"bright": "bright_blue",    "dim": "dim blue",    "lbright": "blue",         "ldim": "dark_blue"},
+    "Green":   {"bright": "bright_green",   "dim": "dim green",   "lbright": "green",        "ldim": "dark_green"},
+    "Yellow":  {"bright": "bright_yellow",  "dim": "dim yellow",  "lbright": "yellow",       "ldim": "dark_orange"},
+    "Magenta": {"bright": "bright_magenta", "dim": "dim magenta", "lbright": "magenta",      "ldim": "dark_magenta"},
+    "Cyan":    {"bright": "bright_cyan",    "dim": "dim cyan",    "lbright": "dark_cyan",    "ldim": "dark_cyan"},
+    "White":   {"bright": "bright_white",   "dim": "dim white",   "lbright": "black",        "ldim": "bright_black"},
 }
 THEME_NAMES = list(THEME_COLORS.keys())
 
@@ -250,11 +251,11 @@ def send_notification(title, message):
 #  SPRITES (generated from theme color)
 # ═══════════════════════════════════════════════════════════════
 
-def _build_sprites(theme_name):
+def _build_sprites(theme_name, light_mode=False):
     """Generate all sprite variants for a given theme color."""
     colors = THEME_COLORS.get(theme_name, THEME_COLORS["Red"])
-    c = colors["bright"]
-    d = colors["dim"]
+    c = colors["lbright"] if light_mode else colors["bright"]
+    d = colors["ldim"] if light_mode else colors["dim"]
 
     body_top = "▐▛███▜▌"
     body_mid = "▝▜█████▛▘"
@@ -360,6 +361,7 @@ def volume_bar(vol, width=10):
 SETTINGS_SCHEMA = [
     {"key": "name",          "label": "Name",          "type": "text",   "max_len": 16},
     {"key": "theme",         "label": "Theme",         "type": "select", "options": THEME_NAMES},
+    {"key": "light_mode",    "label": "Light Mode",    "type": "toggle"},
     {"key": "volume",        "label": "Volume",        "type": "slider", "min": 0, "max": 100, "step": 10},
     {"key": "notifications", "label": "Notifications", "type": "toggle"},
     {"key": "activity_log",  "label": "Activity Log",  "type": "toggle"},
@@ -409,7 +411,7 @@ class ClaudeAnimator:
         self.alert_time = 0.0
 
         # Sprites (built from theme)
-        self.sprites = _build_sprites(config.get("theme", "Red"))
+        self.sprites = _build_sprites(config.get("theme", "Red"), config.get("light_mode", False))
 
     # ───────── settings ─────────
 
@@ -434,6 +436,8 @@ class ClaudeAnimator:
         item = SETTINGS_SCHEMA[self.settings_cursor]
         if item["type"] == "toggle":
             self.config[item["key"]] = not self.config.get(item["key"], True)
+            if item["key"] == "light_mode":
+                self._rebuild_sprites()
         elif item["type"] == "text":
             if self.editing_text:
                 # Confirm edit
@@ -472,7 +476,7 @@ class ClaudeAnimator:
             idx = options.index(cur) if cur in options else 0
             self.config[item["key"]] = options[(idx - 1) % len(options)]
             if item["key"] == "theme":
-                self.sprites = _build_sprites(self.config["theme"])
+                self._rebuild_sprites()
 
     def settings_right(self):
         item = SETTINGS_SCHEMA[self.settings_cursor]
@@ -485,7 +489,7 @@ class ClaudeAnimator:
             idx = options.index(cur) if cur in options else 0
             self.config[item["key"]] = options[(idx + 1) % len(options)]
             if item["key"] == "theme":
-                self.sprites = _build_sprites(self.config["theme"])
+                self._rebuild_sprites()
 
     # ───────── events ─────────
 
@@ -581,20 +585,37 @@ class ClaudeAnimator:
 
     # ───────── ground ─────────
 
+    def _is_light(self):
+        return self.config.get("light_mode", False)
+
     def _theme_color(self):
         theme = self.config.get("theme", "Red")
-        return THEME_COLORS.get(theme, THEME_COLORS["Red"])["bright"]
+        colors = THEME_COLORS.get(theme, THEME_COLORS["Red"])
+        return colors["lbright"] if self._is_light() else colors["bright"]
+
+    def _dim(self):
+        """Return the dim/muted style for separators and secondary text."""
+        return "bright_black" if self._is_light() else "dim"
+
+    def _text(self):
+        """Return the normal text style."""
+        return "black" if self._is_light() else "white"
+
+    def _rebuild_sprites(self):
+        """Rebuild sprites after theme or light_mode change."""
+        self.sprites = _build_sprites(self.config.get("theme", "Red"), self._is_light())
 
     def _render_ground(self, pos):
         ground = list("─" * SCENE_W)
         tc = self._theme_color()
+        d = self._dim()
 
         if self.phase == "waiting":
-            return "[dim]" + "".join(ground) + "[/]"
+            return f"[{d}]" + "".join(ground) + "[/]"
         elif self.phase == "typing":
             foot = min(max(pos + SPRITE_W // 2, 0), SCENE_W - 1)
             ground[foot] = "●"
-            return "[dim]" + "".join(ground[:foot]) + f"[{tc}]" + ground[foot] + "[/][dim]" + "".join(ground[foot+1:]) + "[/]"
+            return f"[{d}]" + "".join(ground[:foot]) + f"[{tc}]" + ground[foot] + f"[/][{d}]" + "".join(ground[foot+1:]) + "[/]"
         elif self.phase == "walking":
             cx = min(pos + SPRITE_W // 2, SCENE_W - 1)
             tx = min(TARGET_X + TARGET_W // 2, SCENE_W - 1)
@@ -604,7 +625,7 @@ class ClaudeAnimator:
             for i in range(cx + 1, tx):
                 ground[i] = "·"
             s = "".join(ground)
-            return f"[dim]{s[:cx]}[{tc}]{s[cx]}[/][dim]{s[cx+1:]}[/]"
+            return f"[{d}]{s[:cx]}[{tc}]{s[cx]}[/][{d}]{s[cx+1:]}[/]"
         elif self.phase == "action":
             pulse = "⣾⣽⣻⢿⡿⣟⣯⣷"
             p = pulse[self.frame % len(pulse)]
@@ -613,29 +634,31 @@ class ClaudeAnimator:
                 ground[i] = "·"
             ground[tx] = p
             s = "".join(ground)
-            return f"[dim]{s[:tx]}[{tc}]{s[tx]}[/][dim]{s[tx+1:]}[/]"
+            return f"[{d}]{s[:tx]}[{tc}]{s[tx]}[/][{d}]{s[tx+1:]}[/]"
         elif self.phase == "returning":
             tx = min(TARGET_X + TARGET_W // 2, SCENE_W - 1)
             for i in range(tx + 1):
                 ground[i] = "·"
             ground[tx] = "✓"
             s = "".join(ground)
-            return f"[dim]{s[:tx]}[green]{s[tx]}[/][dim]{s[tx+1:]}[/]"
+            return f"[{d}]{s[:tx]}[green]{s[tx]}[/][{d}]{s[tx+1:]}[/]"
         elif self.phase == "asking":
             foot = min(max(pos + SPRITE_W // 2, 0), SCENE_W - 1)
             blink = "◆" if (self.frame // 6) % 2 == 0 else "◇"
             ground[foot] = blink
-            return "[dim]" + "".join(ground[:foot]) + "[bold bright_yellow]" + ground[foot] + "[/][dim]" + "".join(ground[foot+1:]) + "[/]"
+            return f"[{d}]" + "".join(ground[:foot]) + "[bold bright_yellow]" + ground[foot] + f"[/][{d}]" + "".join(ground[foot+1:]) + "[/]"
 
-        return "[dim]" + "".join(ground) + "[/]"
+        return f"[{d}]" + "".join(ground) + "[/]"
 
     # ───────── settings panel ─────────
 
     def _render_settings(self):
+        d = self._dim()
+        t = self._text()
         lines = []
         lines.append("")
-        lines.append("  [bold bright_white]SETTINGS[/]")
-        lines.append("  [dim]" + "─" * 40 + "[/]")
+        lines.append(f"  [bold {t}]SETTINGS[/]")
+        lines.append(f"  [{d}]" + "─" * 40 + "[/]")
         lines.append("")
 
         for idx, item in enumerate(SETTINGS_SCHEMA):
@@ -649,7 +672,7 @@ class ClaudeAnimator:
                 tag = "[bold bright_green]ON [/]" if val else "[bold bright_red]OFF[/]"
                 line = f"  {arrow}  {label:<18s}  [{tag}]"
                 if selected:
-                    line += "    [dim]Enter: toggle[/]"
+                    line += f"    [{d}]Enter: toggle[/]"
 
             elif item["type"] == "slider":
                 val = self.config.get(key, 0)
@@ -657,38 +680,38 @@ class ClaudeAnimator:
                 pct = f"{val:>3d}%"
                 line = f"  {arrow}  {label:<18s}  {bar} {pct}"
                 if selected:
-                    line += "  [dim]←→[/]"
+                    line += f"  [{d}]←→ / h,l[/]"
 
             elif item["type"] == "text":
                 if selected and self.editing_text:
                     cursor = "▏" if (self.frame // 6) % 2 == 0 else " "
-                    line = f"  {arrow}  {label:<18s}  [bold bright_white]{self.edit_buffer}{cursor}[/]"
-                    line += "  [dim]Enter: save  Esc: cancel[/]"
+                    line = f"  {arrow}  {label:<18s}  [bold {t}]{self.edit_buffer}{cursor}[/]"
+                    line += f"  [{d}]Enter: save  Esc: cancel[/]"
                 else:
                     val = self.config.get(key, "")
-                    line = f"  {arrow}  {label:<18s}  [bold]{val}[/]"
+                    line = f"  {arrow}  {label:<18s}  [bold {t}]{val}[/]"
                     if selected:
-                        line += "    [dim]Enter: edit[/]"
+                        line += f"    [{d}]Enter: edit[/]"
 
             elif item["type"] == "select":
                 val = self.config.get(key, item["options"][0])
-                tc = THEME_COLORS.get(val, {}).get("bright", "white") if key == "theme" else "white"
-                line = f"  {arrow}  {label:<18s}  [{tc}]◀ {val} ▶[/]"
+                sc = THEME_COLORS.get(val, {}).get("bright", "white") if key == "theme" else t
+                line = f"  {arrow}  {label:<18s}  [{sc}]◀ {val} ▶[/]"
                 if selected:
-                    line += "  [dim]←→[/]"
+                    line += f"  [{d}]←→ / h,l[/]"
 
             lines.append(line)
 
         lines.append("")
-        lines.append("  [dim]" + "─" * 40 + "[/]")
-        lines.append("  [dim]↑↓ or j/k  Navigate        Enter  Edit/Toggle[/]")
-        lines.append("  [dim]←→ or h/l  Adjust/Cycle    S      Save & close[/]")
+        lines.append(f"  [{d}]" + "─" * 40 + "[/]")
+        lines.append(f"  [{d}]↑↓ or j/k  Navigate        Enter  Edit/Toggle[/]")
+        lines.append(f"  [{d}]←→ or h/l  Adjust/Cycle    S      Save & close[/]")
         lines.append("")
 
         return Panel(
             "\n".join(lines),
             title="[bold bright_yellow] ⚙ Settings [/]",
-            subtitle="[dim]S to close[/]",
+            subtitle=f"[{d}]S to close[/]",
             border_style="bright_yellow",
             width=PANEL_W,
             padding=(0, 1),
@@ -720,20 +743,23 @@ class ClaudeAnimator:
         elapsed = int(time.time() - self.start_time)
         mins, secs = divmod(elapsed, 60)
 
+        d = self._dim()
+        t = self._text()
+        tc = self._theme_color()
+
         state_tags = {
-            "waiting":   "[dim]IDLE[/]",
+            "waiting":   f"[{d}]IDLE[/]",
             "typing":    "[bold bright_green]TYPING[/]",
             "walking":   "[bold bright_yellow]TOOL USE[/]",
             "action":    "[bold bright_yellow]WORKING[/]",
             "returning": "[bold bright_green]RETURNING[/]",
             "asking":    "[bold bright_yellow]WAITING[/]",
         }
-        tc = self._theme_color()
         name = self.config.get("name", "Claude")
         state = state_tags.get(self.phase, "")
-        header = f" [bold {tc}]◗[/] [bold white]{name}[/]  [dim]│[/]  {state}  [dim]│[/]  Tools: [bold]{self.total_tools}[/]  [dim]│[/]  {mins:02d}:{secs:02d}"
+        header = f" [bold {tc}]◗[/] [bold {t}]{name}[/]  [{d}]│[/]  {state}  [{d}]│[/]  Tools: [bold]{self.total_tools}[/]  [{d}]│[/]  {mins:02d}:{secs:02d}"
 
-        lines = [header, "[dim]" + "═" * SCENE_W + "[/]"]
+        lines = [header, f"[{d}]" + "═" * SCENE_W + "[/]"]
 
         # Visual alert banner (shown for 5 seconds)
         if self.alert_message and (time.time() - self.alert_time) < 5.0:
@@ -751,14 +777,14 @@ class ClaudeAnimator:
         # Stats
         if self.config.get("stats_panel", True):
             cost_str = f"${self.cost_usd:.3f}" if self.cost_usd > 0 else "$0.00"
-            model_str = self.model_name if self.model_name != "..." else "[dim]waiting...[/]"
+            model_str = self.model_name if self.model_name != "..." else f"[{d}]waiting...[/]"
             bar = progress_bar(self.context_pct, 14)
             ctx_str = f"{self.context_pct:.0f}%"
             vol = self.config.get("volume", 75)
             vol_icon = "🔇" if vol == 0 else ("🔈" if vol <= 33 else ("🔉" if vol <= 66 else "🔊"))
 
-            lines.append(f"  [bold]{model_str}[/] [dim]│[/] {cost_str} [dim]│[/] Ctx:{bar}{ctx_str} [dim]│[/] {vol_icon}")
-            lines.append("[dim]" + "─" * SCENE_W + "[/]")
+            lines.append(f"  [bold]{model_str}[/] [{d}]│[/] {cost_str} [{d}]│[/] Ctx:{bar}{ctx_str} [{d}]│[/] {vol_icon}{vol}%")
+            lines.append(f"[{d}]" + "─" * SCENE_W + "[/]")
 
         # Bubble
         bubble_line = " " * SCENE_W
@@ -795,7 +821,7 @@ class ClaudeAnimator:
         lines.append("")
         if self.phase == "waiting":
             zzz = "z" * (1 + (self.frame // 8) % 4)
-            lines.append(f"  [dim italic]{zzz}... waiting for input[/]")
+            lines.append(f"  [{d} italic]{zzz}... waiting for input[/]")
         elif self.phase == "typing":
             dots = "·" * (1 + self.frame % 4)
             lines.append(f"  [bold bright_green]✎ generating response{dots}[/]")
@@ -809,19 +835,19 @@ class ClaudeAnimator:
             lines.append(f"  [bold bright_yellow]? Waiting for confirmation{tool_info}{dots}[/]")
 
         lines.append("")
-        lines.append("[dim]" + "═" * SCENE_W + "[/]")
+        lines.append(f"[{d}]" + "═" * SCENE_W + "[/]")
 
         # Activity log
         if self.config.get("activity_log", True):
-            lines.append(" [bold]Activity:[/]")
+            lines.append(f" [bold {t}]Activity:[/]")
             if self.history:
                 for h in self.history[-5:]:
                     lines.append(f"  {h}")
             else:
-                lines.append("  [dim italic]nothing yet...[/]")
+                lines.append(f"  [{d} italic]nothing yet...[/]")
             lines.append("")
 
-        lines.append(f"  [dim]Press [bold]S[/dim][dim] for settings[/]")
+        lines.append(f"  [{d}]Press [bold]S[/{d}][{d}] for settings[/]")
 
         return Panel(
             "\n".join(lines),
