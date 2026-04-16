@@ -1148,7 +1148,7 @@ document.addEventListener('click', () => {
 
 // SSE connection with auto-reconnect
 function connect() {
-  const evtSource = new EventSource('/events');
+  const evtSource = new EventSource('events');
   const el = document.getElementById('status');
   const toolEl = document.getElementById('tool');
   const connEl = document.getElementById('conn');
@@ -1220,9 +1220,10 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Cache-Control", "no-cache, no-transform")
             self.send_header("Connection", "keep-alive")
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
 
             q = Queue()
