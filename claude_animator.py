@@ -878,7 +878,7 @@ class ClaudeAnimator:
         return Panel(
             "\n".join(lines),
             title=f"[bold {tc}] ▐▛█▜▌ Claude Monitor [/]",
-            subtitle="[dim]Ctrl+C to quit[/]",
+            subtitle=f"[{d}]Web: http://localhost:{WEB_PORT}  |  Ctrl+C to quit[/]",
             border_style=tc,
             width=PANEL_W,
             padding=(0, 1),
@@ -1322,9 +1322,6 @@ def main():
     threading.Thread(target=run_web_server, daemon=True).start()
 
     console = Console()
-    console.print(f"[dim]  Web UI: http://localhost:{WEB_PORT}[/]")
-    console.print(f"[dim]  Open in browser for sound & notifications[/]")
-    time.sleep(1.5)
     console.clear()
 
     try:
