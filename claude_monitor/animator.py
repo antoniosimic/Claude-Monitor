@@ -156,8 +156,18 @@ def _make_tone(freq, dur_ms, amplitude=0.5, sample_rate=22050):
 
 
 def _play_bell():
-    """Terminal bell - works in web terminals, triggers browser tab flash."""
-    print("\a", end="", flush=True)
+    """Terminal bell - bypasses Rich to write directly to terminal."""
+    try:
+        if not IS_WINDOWS and os.path.exists("/dev/tty"):
+            # Write directly to terminal, bypassing Rich's stdout capture
+            with open("/dev/tty", "w") as tty_fd:
+                tty_fd.write("\a")
+                tty_fd.flush()
+        else:
+            sys.stderr.write("\a")
+            sys.stderr.flush()
+    except Exception:
+        pass
 
 
 def _play_tone(freq, dur_ms, volume_pct):
@@ -239,9 +249,18 @@ def send_notification(title, message):
                                capture_output=True, timeout=5)
                 return
 
-            # Fallback: terminal title + bell (works in web terminals / cloud)
-            print(f"\033]2;{title}: {message}\007", end="", flush=True)
-            _play_bell()
+            # Fallback: terminal bell + title change via /dev/tty (bypasses Rich)
+            try:
+                if not IS_WINDOWS and os.path.exists("/dev/tty"):
+                    with open("/dev/tty", "w") as tty_fd:
+                        tty_fd.write("\a")
+                        tty_fd.write(f"\033]2;{title}: {message}\007")
+                        tty_fd.write(f"\033]777;notify;{title};{message}\033\\")
+                        tty_fd.flush()
+                else:
+                    _play_bell()
+            except Exception:
+                _play_bell()
         except Exception:
             pass
     threading.Thread(target=_send, daemon=True).start()
@@ -665,7 +684,7 @@ class ClaudeAnimator:
             key = item["key"]
             label = item["label"]
             selected = idx == self.settings_cursor
-            arrow = "[bold bright_yellow]▸[/]" if selected else " "
+            arrow = f"[bold {self._theme_color()}]▸[/]" if selected else " "
 
             if item["type"] == "toggle":
                 val = self.config.get(key, True)
@@ -708,11 +727,12 @@ class ClaudeAnimator:
         lines.append(f"  [{d}]←→ or h/l  Adjust/Cycle    S      Save & close[/]")
         lines.append("")
 
+        tc = self._theme_color()
         return Panel(
             "\n".join(lines),
-            title="[bold bright_yellow] ⚙ Settings [/]",
+            title=f"[bold {tc}] ⚙ Settings [/]",
             subtitle=f"[{d}]S to close[/]",
-            border_style="bright_yellow",
+            border_style=tc,
             width=PANEL_W,
             padding=(0, 1),
         )
