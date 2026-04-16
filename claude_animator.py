@@ -34,7 +34,6 @@ import os
 import platform
 import shutil
 
-from queue import Queue, Empty
 import http.server
 
 from rich.console import Console
@@ -1146,68 +1145,72 @@ document.addEventListener('click', () => {
   if (Notification.permission === 'default') Notification.requestPermission();
 }, { once: true });
 
-// SSE connection with auto-reconnect
-function connect() {
-  const evtSource = new EventSource('events');
-  const el = document.getElementById('status');
-  const toolEl = document.getElementById('tool');
-  const connEl = document.getElementById('conn');
+// Polling connection (works reliably through any proxy)
+let lastEventId = 0;
+const el = document.getElementById('status');
+const toolEl = document.getElementById('tool');
+const connEl = document.getElementById('conn');
+let connected = false;
 
-  evtSource.onopen = () => {
-    connEl.className = 'connected'; connEl.textContent = '● Connected';
-  };
-
-  evtSource.onmessage = (e) => {
-    const d = JSON.parse(e.data);
-    el.className = 'status';
-    toolEl.textContent = '';
-
-    if (d.type === 'UserPromptSubmit') {
-      el.className = 'status typing'; el.textContent = '✎ Generating response...';
-    } else if (d.type === 'Stop') {
-      el.className = 'status done flash'; el.textContent = '✓ Response complete';
-      audioCtx.resume().then(() => playCompletion());
-      showNotif('Claude Monitor', 'Response complete');
-    } else if (d.type === 'PermissionRequest') {
-      el.className = 'status asking flash'; el.textContent = '? Approval needed';
-      toolEl.textContent = d.tool || '';
-      audioCtx.resume().then(() => playQuestion());
-      showNotif('Claude Monitor', 'Approval needed: ' + (d.tool || ''));
-    } else if (d.type === 'PreToolUse') {
-      el.className = 'status tool'; el.textContent = '⚡ ' + (d.detail || d.tool || 'Working...');
-      toolEl.textContent = d.tool || '';
-    } else if (d.type === 'PostToolUse') {
-      el.className = 'status typing'; el.textContent = '✎ Generating response...';
-    } else if (d.type === 'StatusUpdate') {
-      // Ignore status updates in UI
-    }
-  };
-
-  evtSource.onerror = () => {
-    connEl.className = 'disconnected'; connEl.textContent = '● Disconnected - reconnecting...';
-    evtSource.close();
-    setTimeout(connect, 3000);
-  };
+function handleEvent(d) {
+  el.className = 'status';
+  toolEl.textContent = '';
+  if (d.type === 'UserPromptSubmit') {
+    el.className = 'status typing'; el.textContent = '✎ Generating response...';
+  } else if (d.type === 'Stop') {
+    el.className = 'status done flash'; el.textContent = '✓ Response complete';
+    audioCtx.resume().then(() => playCompletion());
+    showNotif('Claude Monitor', 'Response complete');
+  } else if (d.type === 'PermissionRequest') {
+    el.className = 'status asking flash'; el.textContent = '? Approval needed';
+    toolEl.textContent = d.tool || '';
+    audioCtx.resume().then(() => playQuestion());
+    showNotif('Claude Monitor', 'Approval needed: ' + (d.tool || ''));
+  } else if (d.type === 'PreToolUse') {
+    el.className = 'status tool'; el.textContent = '⚡ ' + (d.detail || d.tool || 'Working...');
+    toolEl.textContent = d.tool || '';
+  } else if (d.type === 'PostToolUse') {
+    el.className = 'status typing'; el.textContent = '✎ Generating response...';
+  }
 }
 
-connect();
+async function poll() {
+  try {
+    const resp = await fetch('poll?since=' + lastEventId);
+    if (resp.ok) {
+      if (!connected) { connected = true; connEl.className = 'connected'; connEl.textContent = '● Connected'; }
+      const events = await resp.json();
+      for (const ev of events) {
+        handleEvent(ev);
+        if (ev.id > lastEventId) lastEventId = ev.id;
+      }
+    }
+  } catch(e) {
+    connected = false;
+    connEl.className = 'disconnected'; connEl.textContent = '● Disconnected - reconnecting...';
+  }
+  setTimeout(poll, 500);
+}
+
+poll();
 </script>
 </body></html>
 """
 
-# SSE client queues
-_sse_queues = []
+# Polling event buffer
+_web_events = []
+_web_event_counter = 0
 
 
 def push_web_event(event_type, tool_name="", detail=""):
-    """Push an event to all connected SSE browser clients."""
-    event = {"type": event_type, "tool": tool_name, "detail": detail}
-    data = json.dumps(event)
-    for q in list(_sse_queues):
-        try:
-            q.put_nowait(data)
-        except Exception:
-            pass
+    """Push an event to the polling buffer for browser clients."""
+    global _web_event_counter
+    _web_event_counter += 1
+    event = {"type": event_type, "tool": tool_name, "detail": detail, "id": _web_event_counter}
+    _web_events.append(event)
+    # Keep only last 100 events
+    if len(_web_events) > 100:
+        _web_events.pop(0)
 
 
 class _WebHandler(http.server.BaseHTTPRequestHandler):
@@ -1217,39 +1220,26 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(WEB_PAGE.encode("utf-8"))
-        elif self.path == "/events":
+        elif self.path.startswith("/poll"):
+            # Parse ?since=N parameter
+            since = 0
+            if "?" in self.path:
+                params = self.path.split("?", 1)[1]
+                for p in params.split("&"):
+                    if p.startswith("since="):
+                        try:
+                            since = int(p.split("=", 1)[1])
+                        except ValueError:
+                            pass
+            # Return events newer than 'since'
+            new_events = [e for e in _web_events if e.get("id", 0) > since]
+            data = json.dumps(new_events)
             self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache, no-transform")
-            self.send_header("Connection", "keep-alive")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
-
-            # Flush a large padding block to push past proxy buffers
-            # Many proxies (nginx, GCP) buffer ~4-8KB before forwarding
-            padding = ": " + " " * 4096 + "\n\n"
-            self.wfile.write(padding.encode())
-            self.wfile.write(b"retry: 1000\n\n")
-            self.wfile.flush()
-
-            q = Queue()
-            _sse_queues.append(q)
-            try:
-                while True:
-                    try:
-                        data = q.get(timeout=15)
-                        self.wfile.write(f"data: {data}\n\n".encode())
-                        self.wfile.flush()
-                    except Empty:
-                        # Send keepalive comment
-                        self.wfile.write(b": keepalive\n\n")
-                        self.wfile.flush()
-            except Exception:
-                pass
-            finally:
-                if q in _sse_queues:
-                    _sse_queues.remove(q)
+            self.wfile.write(data.encode())
         else:
             self.send_response(404)
             self.end_headers()
