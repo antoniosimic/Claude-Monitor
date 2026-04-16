@@ -35,6 +35,13 @@ import platform
 import shutil
 
 import http.server
+import asyncio
+try:
+    import websockets
+    import websockets.http
+    HAS_WEBSOCKETS = True
+except ImportError:
+    HAS_WEBSOCKETS = False
 
 from rich.console import Console
 from rich.live import Live
@@ -1145,12 +1152,10 @@ document.addEventListener('click', () => {
   if (Notification.permission === 'default') Notification.requestPermission();
 }, { once: true });
 
-// Polling connection (works reliably through any proxy)
-let lastEventId = 0;
+// WebSocket connection with polling fallback
 const el = document.getElementById('status');
 const toolEl = document.getElementById('tool');
 const connEl = document.getElementById('conn');
-let connected = false;
 
 function handleEvent(d) {
   el.className = 'status';
@@ -1174,85 +1179,155 @@ function handleEvent(d) {
   }
 }
 
-async function poll() {
-  try {
-    const resp = await fetch('poll?since=' + lastEventId);
-    if (resp.ok) {
-      if (!connected) { connected = true; connEl.className = 'connected'; connEl.textContent = '● Connected'; }
-      const events = await resp.json();
-      for (const ev of events) {
-        handleEvent(ev);
-        if (ev.id > lastEventId) lastEventId = ev.id;
-      }
-    }
-  } catch(e) {
-    connected = false;
-    connEl.className = 'disconnected'; connEl.textContent = '● Disconnected - reconnecting...';
-  }
-  setTimeout(poll, 500);
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = proto + '//' + location.host + location.pathname.replace(/\/$/, '') + '/ws';
+  const ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    connEl.className = 'connected'; connEl.textContent = '● Connected (WebSocket)';
+  };
+
+  ws.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    handleEvent(d);
+  };
+
+  ws.onclose = () => {
+    connEl.className = 'disconnected'; connEl.textContent = '● Reconnecting...';
+    setTimeout(connectWS, 2000);
+  };
+
+  ws.onerror = () => { ws.close(); };
 }
 
-poll();
+connectWS();
 </script>
 </body></html>
 """
 
-# Polling event buffer
+# WebSocket clients and event buffer (polling fallback)
+_ws_clients = set()
+_ws_loop = None
 _web_events = []
 _web_event_counter = 0
 
 
 def push_web_event(event_type, tool_name="", detail=""):
-    """Push an event to the polling buffer for browser clients."""
+    """Push event to WebSocket clients and polling buffer."""
     global _web_event_counter
     _web_event_counter += 1
     event = {"type": event_type, "tool": tool_name, "detail": detail, "id": _web_event_counter}
+    data = json.dumps(event)
+    # Send to WebSocket clients (instant)
+    if _ws_loop and _ws_clients:
+        for ws in list(_ws_clients):
+            try:
+                asyncio.run_coroutine_threadsafe(ws.send(data), _ws_loop)
+            except Exception:
+                pass
+    # Also keep in polling buffer as fallback
     _web_events.append(event)
-    # Keep only last 100 events
     if len(_web_events) > 100:
         _web_events.pop(0)
 
 
-class _WebHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(WEB_PAGE.encode("utf-8"))
-        elif self.path.startswith("/poll"):
-            # Parse ?since=N parameter
-            since = 0
-            if "?" in self.path:
-                params = self.path.split("?", 1)[1]
-                for p in params.split("&"):
-                    if p.startswith("since="):
-                        try:
-                            since = int(p.split("=", 1)[1])
-                        except ValueError:
-                            pass
-            # Return events newer than 'since'
-            new_events = [e for e in _web_events if e.get("id", 0) > since]
-            data = json.dumps(new_events)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data.encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
+async def _ws_handler(websocket):
+    """Handle a WebSocket client connection."""
+    _ws_clients.add(websocket)
+    try:
+        async for _ in websocket:
+            pass  # We only send, never receive
+    except Exception:
+        pass
+    finally:
+        _ws_clients.discard(websocket)
 
-    def log_message(self, format, *args):
-        pass  # Suppress request logs
+
+def _ws_process_request(connection, request):
+    """Serve HTML page for normal HTTP, let /ws through for WebSocket."""
+    from websockets.http11 import Response
+    path = request.path
+    clean = path.rstrip("/")
+
+    # Serve HTML page for root
+    if clean == "" or clean.endswith("/proxy/" + str(WEB_PORT)):
+        return Response(200, "OK", websockets.Headers([
+            ("Content-Type", "text/html; charset=utf-8"),
+        ]), WEB_PAGE.encode("utf-8"))
+
+    # Polling fallback endpoint
+    if clean.endswith("/poll") or "/poll?" in path:
+        since = 0
+        if "?" in path:
+            params = path.split("?", 1)[1]
+            for p in params.split("&"):
+                if p.startswith("since="):
+                    try:
+                        since = int(p.split("=", 1)[1])
+                    except ValueError:
+                        pass
+        new_events = [e for e in _web_events if e.get("id", 0) > since]
+        data = json.dumps(new_events)
+        return Response(200, "OK", websockets.Headers([
+            ("Content-Type", "application/json"),
+            ("Cache-Control", "no-cache"),
+        ]), data.encode())
+
+    # Let WebSocket upgrade through
+    if path.endswith("/ws"):
+        return None
+
+    return Response(404, "Not Found", websockets.Headers(), b"Not Found")
 
 
 def run_web_server(port=WEB_PORT):
-    """Start the web server for browser-based sound and notifications."""
+    """Start WebSocket + HTTP server for browser-based sound and notifications."""
+    global _ws_loop
+    if not HAS_WEBSOCKETS:
+        # Fallback to basic HTTP server if websockets not installed
+        class _FallbackHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(WEB_PAGE.encode("utf-8"))
+                elif self.path.startswith("/poll"):
+                    since = 0
+                    if "?" in self.path:
+                        for p in self.path.split("?",1)[1].split("&"):
+                            if p.startswith("since="):
+                                try: since = int(p.split("=",1)[1])
+                                except: pass
+                    new_events = [e for e in _web_events if e.get("id",0) > since]
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(new_events).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            def log_message(self, *a): pass
+        try:
+            server = http.server.HTTPServer(("0.0.0.0", port), _FallbackHandler)
+            server.serve_forever()
+        except Exception:
+            pass
+        return
+
+    _ws_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_ws_loop)
+
+    async def _run():
+        async with websockets.serve(
+            _ws_handler, "0.0.0.0", port,
+            process_request=_ws_process_request,
+        ):
+            await asyncio.get_running_loop().create_future()  # run forever
+
     try:
-        server = http.server.HTTPServer(("0.0.0.0", port), _WebHandler)
-        server.serve_forever()
+        _ws_loop.run_until_complete(_run())
     except Exception:
         pass
 
