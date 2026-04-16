@@ -31,28 +31,43 @@ import socket
 import signal
 import subprocess
 import os
+import platform
+import shutil
 
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 
+IS_WINDOWS = platform.system() == "Windows"
+
+# Windows sound
 try:
     import winsound
-    HAS_SOUND = True
+    HAS_WINSOUND = True
 except ImportError:
-    HAS_SOUND = False
+    HAS_WINSOUND = False
 
+# Windows keyboard
 try:
     import msvcrt
-    HAS_KEYBOARD = True
 except ImportError:
-    HAS_KEYBOARD = False
+    msvcrt = None
 
+# Unix keyboard
+try:
+    import select
+    import tty
+    import termios
+    HAS_UNIX_KB = True
+except ImportError:
+    HAS_UNIX_KB = False
+
+# Windows notifications
 try:
     from winotify import Notification
-    HAS_NOTIFY = True
+    HAS_WINOTIFY = True
 except ImportError:
-    HAS_NOTIFY = False
+    HAS_WINOTIFY = False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -126,13 +141,38 @@ def _make_tone(freq, dur_ms, amplitude=0.5, sample_rate=22050):
     return buf.getvalue()
 
 
+def _play_bell():
+    """Terminal bell - works in web terminals, triggers browser tab flash."""
+    print("\a", end="", flush=True)
+
+
 def _play_tone(freq, dur_ms, volume_pct):
-    """Play a tone at given volume (0-100)."""
-    if not HAS_SOUND or volume_pct <= 0:
+    """Play a tone at given volume (0-100). Cross-platform."""
+    if volume_pct <= 0:
         return
     amp = max(0.0, min(1.0, volume_pct / 100.0))
     data = _make_tone(freq, dur_ms, amp)
-    winsound.PlaySound(data, winsound.SND_MEMORY)
+
+    if IS_WINDOWS and HAS_WINSOUND:
+        winsound.PlaySound(data, winsound.SND_MEMORY)
+        return
+
+    # Linux/Mac: try aplay (ALSA) or paplay (PulseAudio)
+    for cmd in ["aplay", "paplay"]:
+        if shutil.which(cmd):
+            try:
+                args = [cmd, "-q", "-"] if cmd == "aplay" else [cmd, "--raw", "--format=s16le", "--rate=22050", "--channels=1"]
+                proc = subprocess.Popen(args, stdin=subprocess.PIPE,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                proc.stdin.write(data)
+                proc.stdin.close()
+                proc.wait(timeout=3)
+                return
+            except Exception:
+                continue
+
+    # Fallback: terminal bell
+    _play_bell()
 
 
 def play_completion_sound(volume_pct):
@@ -164,13 +204,30 @@ def play_question_sound(volume_pct):
 # ═══════════════════════════════════════════════════════════════
 
 def send_notification(title, message):
-    """Send a Windows desktop toast notification."""
-    if not HAS_NOTIFY:
-        return
+    """Send a desktop notification. Cross-platform with fallbacks."""
     def _send():
         try:
-            toast = Notification(app_id=APP_NAME, title=title, msg=message)
-            toast.show()
+            # Windows: winotify toast
+            if IS_WINDOWS and HAS_WINOTIFY:
+                toast = Notification(app_id=APP_NAME, title=title, msg=message)
+                toast.show()
+                return
+
+            # Linux/Mac: notify-send (desktop) or osascript (Mac)
+            if shutil.which("notify-send"):
+                subprocess.run(["notify-send", title, message],
+                               capture_output=True, timeout=5)
+                return
+
+            if platform.system() == "Darwin" and shutil.which("osascript"):
+                subprocess.run(["osascript", "-e",
+                               f'display notification "{message}" with title "{title}"'],
+                               capture_output=True, timeout=5)
+                return
+
+            # Fallback: terminal title + bell (works in web terminals / cloud)
+            print(f"\033]2;{title}: {message}\007", end="", flush=True)
+            _play_bell()
         except Exception:
             pass
     threading.Thread(target=_send, daemon=True).start()
@@ -663,9 +720,8 @@ class ClaudeAnimator:
 #  KEYBOARD
 # ═══════════════════════════════════════════════════════════════
 
-def keyboard_listener(animator):
-    if not HAS_KEYBOARD:
-        return
+def _keyboard_windows(animator):
+    """Windows keyboard input via msvcrt."""
     while animator.running:
         try:
             if msvcrt.kbhit():
@@ -690,6 +746,54 @@ def keyboard_listener(animator):
         except Exception:
             pass
         time.sleep(0.05)
+
+
+def _keyboard_unix(animator):
+    """Unix keyboard input via termios + select."""
+    if not sys.stdin.isatty():
+        return
+    old_settings = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+        while animator.running:
+            if select.select([sys.stdin], [], [], 0.05)[0]:
+                ch = sys.stdin.read(1)
+                if ch in ('s', 'S'):
+                    animator.toggle_settings()
+                elif ch == '\x1b':
+                    # Escape or arrow key sequence
+                    if select.select([sys.stdin], [], [], 0.05)[0]:
+                        ch2 = sys.stdin.read(1)
+                        if ch2 == '[':
+                            ch3 = sys.stdin.read(1)
+                            if ch3 == 'A':    # Up
+                                animator.settings_up()
+                            elif ch3 == 'B':  # Down
+                                animator.settings_down()
+                            elif ch3 == 'D':  # Left
+                                animator.settings_left()
+                            elif ch3 == 'C':  # Right
+                                animator.settings_right()
+                    elif animator.show_settings:
+                        animator.toggle_settings()
+                elif ch in ('\r', '\n'):
+                    animator.settings_toggle_or_enter()
+    except Exception:
+        pass
+    finally:
+        try:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        except Exception:
+            pass
+
+
+def keyboard_listener(animator):
+    """Cross-platform keyboard listener."""
+    if IS_WINDOWS and msvcrt:
+        _keyboard_windows(animator)
+    elif HAS_UNIX_KB:
+        _keyboard_unix(animator)
+    # No keyboard support available - settings won't be interactive
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -731,19 +835,42 @@ def run_socket_server(animator, port=9876):
 # ═══════════════════════════════════════════════════════════════
 
 def kill_old_instances(port=9876):
-    try:
-        result = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=5)
-        for line in result.stdout.splitlines():
-            if f":{port}" in line and "UDP" in line:
-                parts = line.split()
-                pid = parts[-1]
-                if pid != str(os.getpid()) and pid.isdigit():
-                    try:
-                        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=3)
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    """Kill any previous monitor instances holding the UDP port."""
+    my_pid = str(os.getpid())
+
+    if IS_WINDOWS:
+        try:
+            result = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=5)
+            for line in result.stdout.splitlines():
+                if f":{port}" in line and "UDP" in line:
+                    parts = line.split()
+                    pid = parts[-1]
+                    if pid != my_pid and pid.isdigit():
+                        try:
+                            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=3)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+    else:
+        # Linux/Mac: try lsof, then fuser
+        try:
+            result = subprocess.run(["lsof", "-i", f"UDP:{port}", "-t"],
+                                    capture_output=True, text=True, timeout=5)
+            for pid in result.stdout.strip().splitlines():
+                pid = pid.strip()
+                if pid.isdigit() and pid != my_pid:
+                    subprocess.run(["kill", "-9", pid], capture_output=True, timeout=3)
+        except Exception:
+            try:
+                result = subprocess.run(["fuser", f"{port}/udp"],
+                                        capture_output=True, text=True, timeout=5)
+                for pid in result.stdout.split():
+                    pid = pid.strip()
+                    if pid.isdigit() and pid != my_pid:
+                        subprocess.run(["kill", "-9", pid], capture_output=True, timeout=3)
+            except Exception:
+                pass
 
 
 def main():
