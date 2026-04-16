@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-monitor"
+version = "1.0.0"
+description = "Real-time ASCII activity monitor for Claude Code"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [{name = "Antonio Simic"}]
+dependencies = [
+    "rich>=13.0",
+    "winotify>=1.1; sys_platform == 'win32'",
+]
+
+[project.scripts]
+claude-monitor = "claude_monitor.animator:main"
+claude-monitor-hook = "claude_monitor.hook:main"
+claude-monitor-status = "claude_monitor.status:main"
+claude-monitor-setup = "claude_monitor.setup:main"
