@@ -82,9 +82,22 @@ DEFAULT_CONFIG = {
     "activity_log": True,
     "stats_panel": True,
     "notifications": True,
+    "name": "Claude",
+    "theme": "Red",
 }
 
 APP_NAME = "Claude Monitor"
+
+THEME_COLORS = {
+    "Red":     {"bright": "bright_red",     "dim": "dim red"},
+    "Blue":    {"bright": "bright_blue",    "dim": "dim blue"},
+    "Green":   {"bright": "bright_green",   "dim": "dim green"},
+    "Yellow":  {"bright": "bright_yellow",  "dim": "dim yellow"},
+    "Magenta": {"bright": "bright_magenta", "dim": "dim magenta"},
+    "Cyan":    {"bright": "bright_cyan",    "dim": "dim cyan"},
+    "White":   {"bright": "bright_white",   "dim": "dim white"},
+}
+THEME_NAMES = list(THEME_COLORS.keys())
 
 
 def load_config():
@@ -234,47 +247,54 @@ def send_notification(title, message):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SPRITES
+#  SPRITES (generated from theme color)
 # ═══════════════════════════════════════════════════════════════
 
-S_REST = [
-    "  [dim red]▐▛███▜▌[/]  ",
-    " [dim red]▝▜█████▛▘[/] ",
-    "   [dim red]▘▘ ▝▝[/]   ",
-]
+def _build_sprites(theme_name):
+    """Generate all sprite variants for a given theme color."""
+    colors = THEME_COLORS.get(theme_name, THEME_COLORS["Red"])
+    c = colors["bright"]
+    d = colors["dim"]
 
-S_STAND = [
-    "  [bright_red]▐▛███▜▌[/]  ",
-    " [bright_red]▝▜█████▛▘[/] ",
-    "   [bright_red]▘▘ ▝▝[/]   ",
-]
+    body_top = "▐▛███▜▌"
+    body_mid = "▝▜█████▛▘"
 
-S_ASK_FRAMES = [
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "   [bright_red]▘▘ ▝▝[/]   "],
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "   [bright_red]▘▘[/]  [bright_red]▝[/]   "],
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "   [bright_red]▘▘ ▝▝[/]   "],
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "   [bright_red]▘[/]  [bright_red]▝▝[/]   "],
-]
+    rest = [
+        f"  [{d}]{body_top}[/]  ",
+        f" [{d}]{body_mid}[/] ",
+        f"   [{d}]▘▘ ▝▝[/]   ",
+    ]
+    stand = [
+        f"  [{c}]{body_top}[/]  ",
+        f" [{c}]{body_mid}[/] ",
+        f"   [{c}]▘▘ ▝▝[/]   ",
+    ]
+    think = list(stand)
 
-S_WALK_R = [
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "  [bright_red]▘▘[/]   [bright_red]▝▝[/]  "],
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "   [bright_red]▘▝▝▘[/]   "],
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "  [bright_red]▝▝[/]   [bright_red]▘▘[/]  "],
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "   [bright_red]▝▘▘▝[/]   "],
-]
+    ask_frames = [
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"   [{c}]▘▘ ▝▝[/]   "],
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"   [{c}]▘▘[/]  [{c}]▝[/]   "],
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"   [{c}]▘▘ ▝▝[/]   "],
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"   [{c}]▘[/]  [{c}]▝▝[/]   "],
+    ]
+    walk_r = [
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"  [{c}]▘▘[/]   [{c}]▝▝[/]  "],
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"   [{c}]▘▝▝▘[/]   "],
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"  [{c}]▝▝[/]   [{c}]▘▘[/]  "],
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"   [{c}]▝▘▘▝[/]   "],
+    ]
+    walk_l = [
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"  [{c}]▝▝[/]   [{c}]▘▘[/]  "],
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"   [{c}]▝▘▘▝[/]   "],
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"  [{c}]▘▘[/]   [{c}]▝▝[/]  "],
+        [f"  [{c}]{body_top}[/]  ", f" [{c}]{body_mid}[/] ", f"   [{c}]▘▝▝▘[/]   "],
+    ]
 
-S_WALK_L = [
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "  [bright_red]▝▝[/]   [bright_red]▘▘[/]  "],
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "   [bright_red]▝▘▘▝[/]   "],
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "  [bright_red]▘▘[/]   [bright_red]▝▝[/]  "],
-    ["  [bright_red]▐▛███▜▌[/]  ", " [bright_red]▝▜█████▛▘[/] ", "   [bright_red]▘▝▝▘[/]   "],
-]
+    return {
+        "rest": rest, "stand": stand, "think": think,
+        "ask_frames": ask_frames, "walk_r": walk_r, "walk_l": walk_l,
+    }
 
-S_THINK = [
-    "  [bright_red]▐▛███▜▌[/]  ",
-    " [bright_red]▝▜█████▛▘[/] ",
-    "   [bright_red]▘▘ ▝▝[/]   ",
-]
 
 THOUGHT_BUBBLES = ["[yellow]°[/] ", "[yellow]•[/] ", "[yellow]°[/]•", " [yellow]•[/]°"]
 QUESTION_BUBBLES = ["[bold bright_yellow]?[/]  ", " [bold bright_yellow]?[/] ", "  [bold bright_yellow]?[/]", " [bold bright_yellow]?[/] "]
@@ -338,6 +358,8 @@ def volume_bar(vol, width=10):
 # ═══════════════════════════════════════════════════════════════
 
 SETTINGS_SCHEMA = [
+    {"key": "name",          "label": "Name",          "type": "text",   "max_len": 16},
+    {"key": "theme",         "label": "Theme",         "type": "select", "options": THEME_NAMES},
     {"key": "volume",        "label": "Volume",        "type": "slider", "min": 0, "max": 100, "step": 10},
     {"key": "notifications", "label": "Notifications", "type": "toggle"},
     {"key": "activity_log",  "label": "Activity Log",  "type": "toggle"},
@@ -378,6 +400,11 @@ class ClaudeAnimator:
         # Settings UI
         self.show_settings = False
         self.settings_cursor = 0
+        self.editing_text = False
+        self.edit_buffer = ""
+
+        # Sprites (built from theme)
+        self.sprites = _build_sprites(config.get("theme", "Red"))
 
     # ───────── settings ─────────
 
@@ -396,18 +423,58 @@ class ClaudeAnimator:
         item = SETTINGS_SCHEMA[self.settings_cursor]
         if item["type"] == "toggle":
             self.config[item["key"]] = not self.config.get(item["key"], True)
+        elif item["type"] == "text":
+            if self.editing_text:
+                # Confirm edit
+                self.config[item["key"]] = self.edit_buffer or self.config.get(item["key"], "")
+                self.editing_text = False
+            else:
+                # Start editing
+                self.editing_text = True
+                self.edit_buffer = self.config.get(item["key"], "")
+
+    def settings_text_input(self, ch):
+        """Handle a character during text editing."""
+        if not self.editing_text:
+            return
+        item = SETTINGS_SCHEMA[self.settings_cursor]
+        max_len = item.get("max_len", 16)
+        if ch == "\x08" or ch == "\x7f":  # Backspace / Delete
+            self.edit_buffer = self.edit_buffer[:-1]
+        elif ch == "\x1b":  # Escape - cancel
+            self.editing_text = False
+        elif len(ch) == 1 and ch.isprintable() and len(self.edit_buffer) < max_len:
+            self.edit_buffer += ch
+
+    def settings_cancel_edit(self):
+        """Cancel text editing."""
+        self.editing_text = False
 
     def settings_left(self):
         item = SETTINGS_SCHEMA[self.settings_cursor]
         if item["type"] == "slider":
             val = self.config.get(item["key"], item.get("min", 0))
             self.config[item["key"]] = max(item["min"], val - item["step"])
+        elif item["type"] == "select":
+            options = item["options"]
+            cur = self.config.get(item["key"], options[0])
+            idx = options.index(cur) if cur in options else 0
+            self.config[item["key"]] = options[(idx - 1) % len(options)]
+            if item["key"] == "theme":
+                self.sprites = _build_sprites(self.config["theme"])
 
     def settings_right(self):
         item = SETTINGS_SCHEMA[self.settings_cursor]
         if item["type"] == "slider":
             val = self.config.get(item["key"], item.get("min", 0))
             self.config[item["key"]] = min(item["max"], val + item["step"])
+        elif item["type"] == "select":
+            options = item["options"]
+            cur = self.config.get(item["key"], options[0])
+            idx = options.index(cur) if cur in options else 0
+            self.config[item["key"]] = options[(idx + 1) % len(options)]
+            if item["key"] == "theme":
+                self.sprites = _build_sprites(self.config["theme"])
 
     # ───────── events ─────────
 
@@ -483,32 +550,38 @@ class ClaudeAnimator:
         return IDLE_X
 
     def _get_sprite(self, pos, prev_pos):
+        sp = self.sprites
         if self.phase == "waiting":
-            return S_REST
+            return sp["rest"]
         elif self.phase == "typing":
             idx = (self.frame // 3) % 4
-            return S_WALK_R[idx] if pos >= prev_pos else S_WALK_L[idx]
+            return sp["walk_r"][idx] if pos >= prev_pos else sp["walk_l"][idx]
         elif self.phase == "walking":
-            return S_WALK_R[(self.frame // 3) % 4]
+            return sp["walk_r"][(self.frame // 3) % 4]
         elif self.phase == "action":
-            return S_THINK
+            return sp["think"]
         elif self.phase == "returning":
-            return S_WALK_L[(self.frame // 3) % 4]
+            return sp["walk_l"][(self.frame // 3) % 4]
         elif self.phase == "asking":
-            return S_ASK_FRAMES[(self.frame // 5) % 4]
-        return S_STAND
+            return sp["ask_frames"][(self.frame // 5) % 4]
+        return sp["stand"]
 
     # ───────── ground ─────────
 
+    def _theme_color(self):
+        theme = self.config.get("theme", "Red")
+        return THEME_COLORS.get(theme, THEME_COLORS["Red"])["bright"]
+
     def _render_ground(self, pos):
         ground = list("─" * SCENE_W)
+        tc = self._theme_color()
 
         if self.phase == "waiting":
             return "[dim]" + "".join(ground) + "[/]"
         elif self.phase == "typing":
             foot = min(max(pos + SPRITE_W // 2, 0), SCENE_W - 1)
             ground[foot] = "●"
-            return "[dim]" + "".join(ground[:foot]) + "[bright_red]" + ground[foot] + "[/][dim]" + "".join(ground[foot+1:]) + "[/]"
+            return "[dim]" + "".join(ground[:foot]) + f"[{tc}]" + ground[foot] + "[/][dim]" + "".join(ground[foot+1:]) + "[/]"
         elif self.phase == "walking":
             cx = min(pos + SPRITE_W // 2, SCENE_W - 1)
             tx = min(TARGET_X + TARGET_W // 2, SCENE_W - 1)
@@ -518,7 +591,7 @@ class ClaudeAnimator:
             for i in range(cx + 1, tx):
                 ground[i] = "·"
             s = "".join(ground)
-            return f"[dim]{s[:cx]}[bright_red]{s[cx]}[/][dim]{s[cx+1:]}[/]"
+            return f"[dim]{s[:cx]}[{tc}]{s[cx]}[/][dim]{s[cx+1:]}[/]"
         elif self.phase == "action":
             pulse = "⣾⣽⣻⢿⡿⣟⣯⣷"
             p = pulse[self.frame % len(pulse)]
@@ -527,7 +600,7 @@ class ClaudeAnimator:
                 ground[i] = "·"
             ground[tx] = p
             s = "".join(ground)
-            return f"[dim]{s[:tx]}[bright_red]{s[tx]}[/][dim]{s[tx+1:]}[/]"
+            return f"[dim]{s[:tx]}[{tc}]{s[tx]}[/][dim]{s[tx+1:]}[/]"
         elif self.phase == "returning":
             tx = min(TARGET_X + TARGET_W // 2, SCENE_W - 1)
             for i in range(tx + 1):
@@ -573,14 +646,30 @@ class ClaudeAnimator:
                 if selected:
                     line += "  [dim]←→[/]"
 
+            elif item["type"] == "text":
+                if selected and self.editing_text:
+                    cursor = "▏" if (self.frame // 6) % 2 == 0 else " "
+                    line = f"  {arrow}  {label:<18s}  [bold bright_white]{self.edit_buffer}{cursor}[/]"
+                    line += "  [dim]Enter: save  Esc: cancel[/]"
+                else:
+                    val = self.config.get(key, "")
+                    line = f"  {arrow}  {label:<18s}  [bold]{val}[/]"
+                    if selected:
+                        line += "    [dim]Enter: edit[/]"
+
+            elif item["type"] == "select":
+                val = self.config.get(key, item["options"][0])
+                tc = THEME_COLORS.get(val, {}).get("bright", "white") if key == "theme" else "white"
+                line = f"  {arrow}  {label:<18s}  [{tc}]◀ {val} ▶[/]"
+                if selected:
+                    line += "  [dim]←→[/]"
+
             lines.append(line)
 
         lines.append("")
         lines.append("  [dim]" + "─" * 40 + "[/]")
-        lines.append("  [dim]↑↓  Navigate[/]")
-        lines.append("  [dim]←→  Adjust volume[/]")
-        lines.append("  [dim]Enter  Toggle on/off[/]")
-        lines.append("  [dim]S   Save & close[/]")
+        lines.append("  [dim]↑↓  Navigate       Enter  Edit/Toggle[/]")
+        lines.append("  [dim]←→  Adjust/Cycle   S      Save & close[/]")
         lines.append("")
 
         return Panel(
@@ -626,8 +715,10 @@ class ClaudeAnimator:
             "returning": "[bold bright_green]RETURNING[/]",
             "asking":    "[bold bright_yellow]WAITING[/]",
         }
+        tc = self._theme_color()
+        name = self.config.get("name", "Claude")
         state = state_tags.get(self.phase, "")
-        header = f" [bold bright_red]◗[/] [bold white]Claude[/]  [dim]│[/]  {state}  [dim]│[/]  Tools: [bold]{self.total_tools}[/]  [dim]│[/]  {mins:02d}:{secs:02d}"
+        header = f" [bold {tc}]◗[/] [bold white]{name}[/]  [dim]│[/]  {state}  [dim]│[/]  Tools: [bold]{self.total_tools}[/]  [dim]│[/]  {mins:02d}:{secs:02d}"
 
         lines = [header, "[dim]" + "═" * SCENE_W + "[/]"]
 
@@ -708,9 +799,9 @@ class ClaudeAnimator:
 
         return Panel(
             "\n".join(lines),
-            title="[bold bright_red] ▐▛█▜▌ Claude Monitor [/]",
+            title=f"[bold {tc}] ▐▛█▜▌ Claude Monitor [/]",
             subtitle="[dim]Ctrl+C to quit[/]",
-            border_style="bright_red",
+            border_style=tc,
             width=PANEL_W,
             padding=(0, 1),
         )
@@ -726,6 +817,22 @@ def _keyboard_windows(animator):
         try:
             if msvcrt.kbhit():
                 ch = msvcrt.getch()
+
+                # Text editing mode - capture all keys
+                if animator.editing_text:
+                    if ch == b'\r':
+                        animator.settings_toggle_or_enter()  # confirm
+                    elif ch == b'\x1b':
+                        animator.settings_cancel_edit()
+                    elif ch == b'\x08':  # Backspace
+                        animator.settings_text_input("\x08")
+                    elif ch not in (b'\xe0', b'\x00'):
+                        try:
+                            animator.settings_text_input(ch.decode("utf-8"))
+                        except Exception:
+                            pass
+                    continue
+
                 if ch in (b's', b'S'):
                     animator.toggle_settings()
                 elif ch == b'\x1b' and animator.show_settings:
@@ -758,6 +865,19 @@ def _keyboard_unix(animator):
         while animator.running:
             if select.select([sys.stdin], [], [], 0.05)[0]:
                 ch = sys.stdin.read(1)
+
+                # Text editing mode
+                if animator.editing_text:
+                    if ch in ('\r', '\n'):
+                        animator.settings_toggle_or_enter()
+                    elif ch == '\x1b':
+                        animator.settings_cancel_edit()
+                    elif ch in ('\x08', '\x7f'):
+                        animator.settings_text_input("\x08")
+                    elif ch.isprintable():
+                        animator.settings_text_input(ch)
+                    continue
+
                 if ch in ('s', 'S'):
                     animator.toggle_settings()
                 elif ch == '\x1b':
