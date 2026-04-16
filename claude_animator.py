@@ -403,6 +403,11 @@ class ClaudeAnimator:
         self.editing_text = False
         self.edit_buffer = ""
 
+        # Visual alerts (for cloud/web terminals without sound)
+        self.alert_message = ""
+        self.alert_style = ""
+        self.alert_time = 0.0
+
         # Sprites (built from theme)
         self.sprites = _build_sprites(config.get("theme", "Red"))
 
@@ -412,6 +417,12 @@ class ClaudeAnimator:
         self.show_settings = not self.show_settings
         if not self.show_settings:
             save_config(self.config)
+
+    def show_alert(self, message, style="bold bright_green"):
+        """Show a visual alert banner for a few seconds."""
+        self.alert_message = message
+        self.alert_style = style
+        self.alert_time = time.time()
 
     def settings_up(self):
         self.settings_cursor = max(0, self.settings_cursor - 1)
@@ -497,6 +508,7 @@ class ClaudeAnimator:
 
         if event_type == "Stop":
             play_completion_sound(vol)
+            self.show_alert("✓ RESPONSE COMPLETE", "bold bright_green")
             if self.config.get("notifications", True):
                 send_notification(APP_NAME, "Response complete")
             self.phase = "waiting"
@@ -506,6 +518,7 @@ class ClaudeAnimator:
             self.phase = "asking"
             self.ask_tool = tool_name
             play_question_sound(vol)
+            self.show_alert(f"? APPROVAL NEEDED: {tool_name}", "bold bright_yellow")
             if self.config.get("notifications", True):
                 send_notification(APP_NAME, f"Approval needed: {tool_name}")
             self.history.append(f"[bold bright_yellow]  ? Approve: {tool_name}[/]")
@@ -668,8 +681,8 @@ class ClaudeAnimator:
 
         lines.append("")
         lines.append("  [dim]" + "─" * 40 + "[/]")
-        lines.append("  [dim]↑↓  Navigate       Enter  Edit/Toggle[/]")
-        lines.append("  [dim]←→  Adjust/Cycle   S      Save & close[/]")
+        lines.append("  [dim]↑↓ or j/k  Navigate        Enter  Edit/Toggle[/]")
+        lines.append("  [dim]←→ or h/l  Adjust/Cycle    S      Save & close[/]")
         lines.append("")
 
         return Panel(
@@ -721,6 +734,19 @@ class ClaudeAnimator:
         header = f" [bold {tc}]◗[/] [bold white]{name}[/]  [dim]│[/]  {state}  [dim]│[/]  Tools: [bold]{self.total_tools}[/]  [dim]│[/]  {mins:02d}:{secs:02d}"
 
         lines = [header, "[dim]" + "═" * SCENE_W + "[/]"]
+
+        # Visual alert banner (shown for 5 seconds)
+        if self.alert_message and (time.time() - self.alert_time) < 5.0:
+            blink = (self.frame // 4) % 2 == 0
+            if blink:
+                pad_total = max(0, SCENE_W - len(self.alert_message) - 4)
+                pad_l = pad_total // 2
+                pad_r = pad_total - pad_l
+                lines.append(f"[{self.alert_style}]{'─' * pad_l}  {self.alert_message}  {'─' * pad_r}[/]")
+            else:
+                lines.append("")
+        elif self.alert_message:
+            self.alert_message = ""
 
         # Stats
         if self.config.get("stats_panel", True):
@@ -880,6 +906,14 @@ def _keyboard_unix(animator):
 
                 if ch in ('s', 'S'):
                     animator.toggle_settings()
+                elif animator.show_settings and ch == 'k':   # vim up
+                    animator.settings_up()
+                elif animator.show_settings and ch == 'j':   # vim down
+                    animator.settings_down()
+                elif animator.show_settings and ch == 'h':   # vim left
+                    animator.settings_left()
+                elif animator.show_settings and ch == 'l':   # vim right
+                    animator.settings_right()
                 elif ch == '\x1b':
                     # Escape or arrow key sequence (0.15s timeout for web terminals)
                     if select.select([sys.stdin], [], [], 0.15)[0]:
