@@ -1,0 +1,7 @@
+{
+  "sound": true,
+  "activity_log": true,
+  "stats_panel": true,
+  "volume": 10,
+  "notifications": false
+}
