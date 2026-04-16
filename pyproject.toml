@@ -12,7 +12,6 @@ license = {text = "MIT"}
 authors = [{name = "Antonio Simic"}]
 dependencies = [
     "rich>=13.0",
-    "websockets>=12.0",
     "winotify>=1.1; sys_platform == 'win32'",
 ]
 

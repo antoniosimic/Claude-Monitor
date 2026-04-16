@@ -35,13 +35,6 @@ import platform
 import shutil
 
 import http.server
-import asyncio
-try:
-    import websockets
-    import websockets.http
-    HAS_WEBSOCKETS = True
-except ImportError:
-    HAS_WEBSOCKETS = False
 
 from rich.console import Console
 from rich.live import Live
@@ -1049,58 +1042,99 @@ def run_socket_server(animator, port=9876):
 
 WEB_PORT = 7777
 
-WEB_PAGE = r"""<!DOCTYPE html>
+def _build_web_page():
+    """Build dynamic HTML page with current events embedded."""
+    # Get last event to determine status
+    last_event = None
+    last_id = _web_event_counter
+    for e in reversed(_web_events):
+        if e.get("type") not in ("StatusUpdate",):
+            last_event = e
+            break
+
+    if last_event is None:
+        status_class = "idle"
+        status_text = "⏳ Waiting for Claude..."
+        tool_text = ""
+    elif last_event["type"] == "UserPromptSubmit":
+        status_class = "typing"
+        status_text = "✎ Generating response..."
+        tool_text = ""
+    elif last_event["type"] == "Stop":
+        status_class = "done"
+        status_text = "✓ Response complete"
+        tool_text = ""
+    elif last_event["type"] == "PermissionRequest":
+        status_class = "asking"
+        status_text = "❓ Approval needed"
+        tool_text = last_event.get("tool", "")
+    elif last_event["type"] == "PreToolUse":
+        status_class = "tool"
+        status_text = "⚡ " + (last_event.get("detail") or last_event.get("tool") or "Working...")
+        tool_text = last_event.get("tool", "")
+    elif last_event["type"] == "PostToolUse":
+        status_class = "typing"
+        status_text = "✎ Generating response..."
+        tool_text = ""
+    else:
+        status_class = "idle"
+        status_text = "⏳ Waiting for Claude..."
+        tool_text = ""
+
+    # Events to notify about (Stop, PermissionRequest) - only recent ones
+    notify_events = json.dumps([e for e in _web_events if e.get("type") in ("Stop", "PermissionRequest")])
+
+    return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
+<meta http-equiv="refresh" content="2">
 <title>Claude Monitor</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0d1117; color: #c9d1d9; font-family: 'Cascadia Code', 'Fira Code', monospace;
-         display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-  .container { text-align: center; padding: 2rem; }
-  .logo { color: #f85149; font-size: 2rem; margin-bottom: 1rem; }
-  .status { font-size: 1.5rem; margin: 1rem 0; padding: 1rem 2rem; border-radius: 8px;
-            border: 1px solid #30363d; background: #161b22; min-width: 300px; }
-  .idle { color: #8b949e; }
-  .typing { color: #3fb950; }
-  .tool { color: #d29922; }
-  .done { color: #3fb950; }
-  .asking { color: #d29922; }
-  .tool-name { font-size: 0.9rem; color: #8b949e; margin-top: 0.5rem; }
-  .connected { color: #3fb950; font-size: 0.8rem; margin-top: 1rem; }
-  .disconnected { color: #f85149; font-size: 0.8rem; margin-top: 1rem; }
-  .controls { margin-top: 2rem; }
-  .btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 0.5rem 1rem;
-         border-radius: 6px; cursor: pointer; font-family: inherit; margin: 0.25rem; }
-  .btn:hover { background: #30363d; }
-  .btn.active { border-color: #3fb950; color: #3fb950; }
-  .volume { margin-top: 1rem; color: #8b949e; }
-  .flash { animation: flash 0.5s ease-in-out 3; }
-  @keyframes flash { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ background: #0d1117; color: #c9d1d9; font-family: 'Cascadia Code', 'Fira Code', monospace;
+         display: flex; justify-content: center; align-items: center; min-height: 100vh; }}
+  .container {{ text-align: center; padding: 2rem; }}
+  .logo {{ color: #f85149; font-size: 2rem; margin-bottom: 1rem; }}
+  .status {{ font-size: 1.5rem; margin: 1rem 0; padding: 1rem 2rem; border-radius: 8px;
+            border: 1px solid #30363d; background: #161b22; min-width: 300px; }}
+  .idle {{ color: #8b949e; }}
+  .typing {{ color: #3fb950; }}
+  .tool {{ color: #d29922; }}
+  .done {{ color: #3fb950; }}
+  .asking {{ color: #d29922; }}
+  .tool-name {{ font-size: 0.9rem; color: #8b949e; margin-top: 0.5rem; }}
+  .info {{ color: #3fb950; font-size: 0.8rem; margin-top: 1rem; }}
+  .controls {{ margin-top: 2rem; }}
+  .btn {{ background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 0.5rem 1rem;
+         border-radius: 6px; cursor: pointer; font-family: inherit; margin: 0.25rem; }}
+  .btn:hover {{ background: #30363d; }}
+  .btn.active {{ border-color: #3fb950; color: #3fb950; }}
+  .volume {{ margin-top: 1rem; color: #8b949e; }}
+  .flash {{ animation: flash 0.5s ease-in-out 3; }}
+  @keyframes flash {{ 0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} }}
+  .log {{ margin-top: 1.5rem; text-align: left; max-width: 400px; margin-left: auto; margin-right: auto;
+          font-size: 0.75rem; color: #8b949e; max-height: 150px; overflow-y: auto; }}
+  .log div {{ padding: 2px 0; border-bottom: 1px solid #21262d; }}
 </style>
 </head><body>
 <div class="container">
   <div class="logo">▐▛█▜▌ Claude Monitor</div>
-  <div class="status idle" id="status">Waiting for connection...</div>
-  <div class="tool-name" id="tool"></div>
+  <div class="status {status_class}" id="status">{status_text}</div>
+  <div class="tool-name">{tool_text}</div>
   <div class="controls">
-    <button class="btn active" id="soundBtn" onclick="toggleSound()">🔊 Sound</button>
-    <button class="btn active" id="notifBtn" onclick="toggleNotif()">🔔 Notifications</button>
-    <button class="btn" onclick="testSound()">🎵 Test</button>
+    <button class="btn" onclick="testSound()">🎵 Test Sound</button>
+    <button class="btn" onclick="enableNotif()">🔔 Enable Notifications</button>
   </div>
-  <div class="volume">Volume: <input type="range" id="vol" min="0" max="100" value="50"
-       oninput="document.getElementById('volLabel').textContent=this.value+'%'">
-       <span id="volLabel">50%</span></div>
-  <div id="conn" class="disconnected">● Connecting...</div>
+  <div class="volume">Volume: <input type="range" id="vol" min="0" max="100" value="50"></div>
+  <div class="info">● Connected — auto-refresh every 2s</div>
+  <div class="log" id="log"></div>
 </div>
 <script>
-let soundEnabled = true, notifEnabled = true;
+// Sound (persists via sessionStorage)
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-function getVol() { return document.getElementById('vol').value / 100 * 0.4; }
-
-function playTone(freq, dur) {
-  if (!soundEnabled) return;
+function getVol() {{ return (document.getElementById('vol').value || 50) / 100 * 0.4; }}
+function playTone(freq, dur) {{
+  audioCtx.resume();
   const osc = audioCtx.createOscillator();
   const gain = audioCtx.createGain();
   osc.connect(gain); gain.connect(audioCtx.destination);
@@ -1108,251 +1142,89 @@ function playTone(freq, dur) {
   gain.gain.value = getVol();
   gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
   osc.start(); osc.stop(audioCtx.currentTime + dur);
-}
-
-function playCompletion() {
-  playTone(523, 0.15);
-  setTimeout(() => playTone(659, 0.15), 130);
-  setTimeout(() => playTone(784, 0.25), 260);
-}
-
-function playQuestion() {
-  playTone(784, 0.2);
-  setTimeout(() => playTone(988, 0.3), 200);
-  setTimeout(() => playTone(784, 0.2), 550);
-  setTimeout(() => playTone(988, 0.4), 750);
-}
-
-function testSound() {
-  audioCtx.resume().then(() => playCompletion());
-}
-
-function showNotif(title, body) {
-  if (!notifEnabled || Notification.permission !== 'granted') return;
-  new Notification(title, { body, icon: '🤖' });
-}
-
-function toggleSound() {
-  soundEnabled = !soundEnabled;
-  const btn = document.getElementById('soundBtn');
-  btn.textContent = soundEnabled ? '🔊 Sound' : '🔇 Sound';
-  btn.classList.toggle('active', soundEnabled);
-}
-
-function toggleNotif() {
-  notifEnabled = !notifEnabled;
-  const btn = document.getElementById('notifBtn');
-  btn.textContent = notifEnabled ? '🔔 Notifications' : '🔕 Notifications';
-  btn.classList.toggle('active', notifEnabled);
-}
-
-// Request notification permission on first interaction
-document.addEventListener('click', () => {
-  audioCtx.resume();
+}}
+function playCompletion() {{
+  playTone(523, 0.15); setTimeout(() => playTone(659, 0.15), 130); setTimeout(() => playTone(784, 0.25), 260);
+}}
+function playQuestion() {{
+  playTone(784, 0.2); setTimeout(() => playTone(988, 0.3), 200);
+  setTimeout(() => playTone(784, 0.2), 550); setTimeout(() => playTone(988, 0.4), 750);
+}}
+function testSound() {{ audioCtx.resume().then(() => playCompletion()); }}
+function enableNotif() {{
   if (Notification.permission === 'default') Notification.requestPermission();
-}, { once: true });
+  sessionStorage.setItem('notif', '1');
+}}
 
-// Connection: polling always runs, WebSocket upgrades if available
-const el = document.getElementById('status');
-const toolEl = document.getElementById('tool');
-const connEl = document.getElementById('conn');
-let lastEventId = 0;
-let useWS = false;
+// Check for new events and play sounds/notifications
+const events = {notify_events};
+const lastPlayed = parseInt(sessionStorage.getItem('lastPlayed') || '0');
+const newEvents = events.filter(e => e.id > lastPlayed);
 
-function handleEvent(d) {
-  el.className = 'status';
-  toolEl.textContent = '';
-  if (d.type === 'UserPromptSubmit') {
-    el.className = 'status typing'; el.textContent = '✎ Generating response...';
-  } else if (d.type === 'Stop') {
-    el.className = 'status done flash'; el.textContent = '✓ Response complete';
-    audioCtx.resume().then(() => playCompletion());
-    showNotif('Claude Monitor', 'Response complete');
-  } else if (d.type === 'PermissionRequest') {
-    el.className = 'status asking flash'; el.textContent = '? Approval needed';
-    toolEl.textContent = d.tool || '';
-    audioCtx.resume().then(() => playQuestion());
-    showNotif('Claude Monitor', 'Approval needed: ' + (d.tool || ''));
-  } else if (d.type === 'PreToolUse') {
-    el.className = 'status tool'; el.textContent = '⚡ ' + (d.detail || d.tool || 'Working...');
-    toolEl.textContent = d.tool || '';
-  } else if (d.type === 'PostToolUse') {
-    el.className = 'status typing'; el.textContent = '✎ Generating response...';
-  }
-}
+if (newEvents.length > 0 && sessionStorage.getItem('soundEnabled') !== '0') {{
+  // Only play for the latest event to avoid sound spam
+  const latest = newEvents[newEvents.length - 1];
+  audioCtx.resume().then(() => {{
+    if (latest.type === 'Stop') playCompletion();
+    else if (latest.type === 'PermissionRequest') playQuestion();
+  }});
+  // Show notification
+  if (Notification.permission === 'granted') {{
+    if (latest.type === 'Stop') new Notification('Claude Monitor', {{ body: 'Response complete' }});
+    else if (latest.type === 'PermissionRequest') new Notification('Claude Monitor', {{ body: 'Approval needed: ' + (latest.tool || '') }});
+  }}
+  sessionStorage.setItem('lastPlayed', String(events[events.length - 1].id));
+}}
 
-// Polling - always works through any proxy
-async function poll() {
-  if (useWS) return; // WebSocket took over
-  try {
-    const base = location.pathname.replace(/\/$/, '');
-    const resp = await fetch(base + '/poll?since=' + lastEventId);
-    if (resp.ok) {
-      connEl.className = 'connected'; connEl.textContent = '● Connected';
-      const events = await resp.json();
-      for (const ev of events) {
-        handleEvent(ev);
-        if (ev.id > lastEventId) lastEventId = ev.id;
-      }
-    }
-  } catch(e) {
-    connEl.className = 'disconnected'; connEl.textContent = '● Reconnecting...';
-  }
-  if (!useWS) setTimeout(poll, 800);
-}
-
-// Try WebSocket upgrade (instant if proxy supports it)
-function tryWS() {
-  try {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = proto + '//' + location.host + location.pathname.replace(/\/$/, '') + '/ws';
-    const ws = new WebSocket(wsUrl);
-    ws.onopen = () => {
-      useWS = true;
-      connEl.className = 'connected'; connEl.textContent = '● Connected (WebSocket)';
-    };
-    ws.onmessage = (e) => {
-      const d = JSON.parse(e.data);
-      if (d.id > lastEventId) lastEventId = d.id;
-      handleEvent(d);
-    };
-    ws.onclose = () => {
-      useWS = false;
-      poll(); // Fall back to polling
-      setTimeout(tryWS, 5000); // Retry WS later
-    };
-    ws.onerror = () => { ws.close(); };
-  } catch(e) {} // WebSocket not available, polling continues
-}
-
-poll();
-tryWS();
+// Show event log
+const logEl = document.getElementById('log');
+const allEvents = {json.dumps(list(_web_events[-10:]))};
+allEvents.reverse();
+allEvents.forEach(e => {{
+  const div = document.createElement('div');
+  div.textContent = e.type + (e.tool ? ' → ' + e.tool : '') + (e.detail ? ' (' + e.detail + ')' : '');
+  logEl.appendChild(div);
+}});
 </script>
 </body></html>
 """
 
-# WebSocket clients and event buffer (polling fallback)
-_ws_clients = set()
-_ws_loop = None
+# Web event buffer
 _web_events = []
 _web_event_counter = 0
 
 
 def push_web_event(event_type, tool_name="", detail=""):
-    """Push event to WebSocket clients and polling buffer."""
+    """Push event to the web event buffer."""
     global _web_event_counter
     _web_event_counter += 1
     event = {"type": event_type, "tool": tool_name, "detail": detail, "id": _web_event_counter}
-    data = json.dumps(event)
-    # Send to WebSocket clients (instant)
-    if _ws_loop and _ws_clients:
-        for ws in list(_ws_clients):
-            try:
-                asyncio.run_coroutine_threadsafe(ws.send(data), _ws_loop)
-            except Exception:
-                pass
-    # Also keep in polling buffer as fallback
     _web_events.append(event)
     if len(_web_events) > 100:
         _web_events.pop(0)
 
 
-async def _ws_handler(websocket):
-    """Handle a WebSocket client connection."""
-    _ws_clients.add(websocket)
-    try:
-        async for _ in websocket:
-            pass  # We only send, never receive
-    except Exception:
+class _WebHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        # Serve dynamic HTML page (any path ending with / or root)
+        page = _build_web_page()
+        data = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *a):
         pass
-    finally:
-        _ws_clients.discard(websocket)
-
-
-def _ws_process_request(connection, request):
-    """Serve HTML page for normal HTTP, let /ws through for WebSocket."""
-    from websockets.http11 import Response
-    path = request.path
-    clean = path.rstrip("/")
-
-    # Serve HTML page for root
-    if clean == "" or clean.endswith("/proxy/" + str(WEB_PORT)):
-        return Response(200, "OK", websockets.Headers([
-            ("Content-Type", "text/html; charset=utf-8"),
-        ]), WEB_PAGE.encode("utf-8"))
-
-    # Polling fallback endpoint
-    if clean.endswith("/poll") or "/poll?" in path:
-        since = 0
-        if "?" in path:
-            params = path.split("?", 1)[1]
-            for p in params.split("&"):
-                if p.startswith("since="):
-                    try:
-                        since = int(p.split("=", 1)[1])
-                    except ValueError:
-                        pass
-        new_events = [e for e in _web_events if e.get("id", 0) > since]
-        data = json.dumps(new_events)
-        return Response(200, "OK", websockets.Headers([
-            ("Content-Type", "application/json"),
-            ("Cache-Control", "no-cache"),
-        ]), data.encode())
-
-    # Let WebSocket upgrade through
-    if path.endswith("/ws"):
-        return None
-
-    return Response(404, "Not Found", websockets.Headers(), b"Not Found")
 
 
 def run_web_server(port=WEB_PORT):
-    """Start WebSocket + HTTP server for browser-based sound and notifications."""
-    global _ws_loop
-    if not HAS_WEBSOCKETS:
-        # Fallback to basic HTTP server if websockets not installed
-        class _FallbackHandler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path == "/":
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write(WEB_PAGE.encode("utf-8"))
-                elif self.path.startswith("/poll"):
-                    since = 0
-                    if "?" in self.path:
-                        for p in self.path.split("?",1)[1].split("&"):
-                            if p.startswith("since="):
-                                try: since = int(p.split("=",1)[1])
-                                except: pass
-                    new_events = [e for e in _web_events if e.get("id",0) > since]
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps(new_events).encode())
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-            def log_message(self, *a): pass
-        try:
-            server = http.server.HTTPServer(("0.0.0.0", port), _FallbackHandler)
-            server.serve_forever()
-        except Exception:
-            pass
-        return
-
-    _ws_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_ws_loop)
-
-    async def _run():
-        async with websockets.serve(
-            _ws_handler, "0.0.0.0", port,
-            process_request=_ws_process_request,
-        ):
-            await asyncio.get_running_loop().create_future()  # run forever
-
+    """Start web server for browser-based monitoring."""
     try:
-        _ws_loop.run_until_complete(_run())
+        server = http.server.HTTPServer(("0.0.0.0", port), _WebHandler)
+        server.serve_forever()
     except Exception:
         pass
 
