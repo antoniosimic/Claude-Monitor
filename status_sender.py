@@ -16,9 +16,14 @@ def main():
         print("Claude Monitor")
         sys.exit(0)
 
+    workspace = data.get("workspace", {}) if isinstance(data.get("workspace"), dict) else {}
+    cwd = data.get("cwd", "") or workspace.get("current_dir", "") or workspace.get("project_dir", "")
+
     # Forward full stats to animator
     msg = json.dumps({
         "hook_event_name": "StatusUpdate",
+        "session_id": data.get("session_id", ""),
+        "cwd": cwd,
         "model": data.get("model", {}),
         "cost": data.get("cost", {}),
         "context_window": data.get("context_window", {}),

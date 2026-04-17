@@ -15,11 +15,15 @@ def main():
     except Exception:
         sys.exit(0)
 
+    workspace = payload.get("workspace", {}) if isinstance(payload.get("workspace"), dict) else {}
+    cwd = payload.get("cwd", "") or workspace.get("current_dir", "") or workspace.get("project_dir", "")
+
     message = json.dumps({
         "hook_event_name": payload.get("hook_event_name", ""),
         "tool_name": payload.get("tool_name", ""),
         "tool_input": payload.get("tool_input", {}),
         "session_id": payload.get("session_id", ""),
+        "cwd": cwd,
     })
 
     try:

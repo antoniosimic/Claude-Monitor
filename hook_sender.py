@@ -1,39 +1,29 @@
 #!/usr/bin/env python3
 """
-Claude Code Hook - sends tool events to the animator via UDP.
-Called by Claude Code on PreToolUse and PostToolUse.
+Claude Monitor Hook - sends tool events to the animator via UDP.
+Called by Claude Code on PreToolUse, PostToolUse, Stop, etc.
 """
 
 import json
 import sys
 import socket
-import os
-from datetime import datetime
-
-
-LOG_FILE = os.path.join(os.path.dirname(__file__), "hook_debug.log")
-
-
-def log(msg):
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now().isoformat()} | {msg}\n")
 
 
 def main():
-    log("Hook called!")
     try:
         payload = json.load(sys.stdin)
-        log(f"Payload: {json.dumps(payload)[:200]}")
-    except Exception as e:
-        log(f"Failed to read stdin: {e}")
+    except Exception:
         sys.exit(0)
 
-    # Forward event to animator
+    workspace = payload.get("workspace", {}) if isinstance(payload.get("workspace"), dict) else {}
+    cwd = payload.get("cwd", "") or workspace.get("current_dir", "") or workspace.get("project_dir", "")
+
     message = json.dumps({
         "hook_event_name": payload.get("hook_event_name", ""),
         "tool_name": payload.get("tool_name", ""),
         "tool_input": payload.get("tool_input", {}),
         "session_id": payload.get("session_id", ""),
+        "cwd": cwd,
     })
 
     try:
@@ -41,7 +31,7 @@ def main():
         sock.sendto(message.encode("utf-8"), ("127.0.0.1", 9876))
         sock.close()
     except Exception:
-        pass  # Animator not running, no problem
+        pass
 
     sys.exit(0)
 
