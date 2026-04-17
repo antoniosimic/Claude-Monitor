@@ -1046,152 +1046,274 @@ def _build_web_page():
     """Build dynamic HTML page with current events embedded."""
     # Get last event to determine status
     last_event = None
-    last_id = _web_event_counter
     for e in reversed(_web_events):
         if e.get("type") not in ("StatusUpdate",):
             last_event = e
             break
 
+    status_map = {
+        "UserPromptSubmit": ("typing", "Generating response...", ""),
+        "Stop": ("done", "Response complete", ""),
+        "PostToolUse": ("typing", "Generating response...", ""),
+    }
+
     if last_event is None:
-        status_class = "idle"
-        status_text = "⏳ Waiting for Claude..."
-        tool_text = ""
-    elif last_event["type"] == "UserPromptSubmit":
-        status_class = "typing"
-        status_text = "✎ Generating response..."
-        tool_text = ""
-    elif last_event["type"] == "Stop":
-        status_class = "done"
-        status_text = "✓ Response complete"
-        tool_text = ""
+        status_class, status_text, tool_text = "idle", "Waiting for Claude...", ""
+    elif last_event["type"] in status_map:
+        status_class, status_text, tool_text = status_map[last_event["type"]]
     elif last_event["type"] == "PermissionRequest":
         status_class = "asking"
-        status_text = "❓ Approval needed"
+        status_text = "Approval needed"
         tool_text = last_event.get("tool", "")
     elif last_event["type"] == "PreToolUse":
         status_class = "tool"
-        status_text = "⚡ " + (last_event.get("detail") or last_event.get("tool") or "Working...")
+        status_text = last_event.get("detail") or last_event.get("tool") or "Working..."
         tool_text = last_event.get("tool", "")
-    elif last_event["type"] == "PostToolUse":
-        status_class = "typing"
-        status_text = "✎ Generating response..."
-        tool_text = ""
     else:
-        status_class = "idle"
-        status_text = "⏳ Waiting for Claude..."
-        tool_text = ""
+        status_class, status_text, tool_text = "idle", "Waiting for Claude...", ""
 
-    # Events to notify about (Stop, PermissionRequest) - only recent ones
+    # Status icons
+    status_icons = {
+        "idle": "💤", "typing": "✍️", "done": "✅",
+        "asking": "❓", "tool": "⚡",
+    }
+    status_icon = status_icons.get(status_class, "💤")
+
+    # Animator stats
+    a = _web_animator
+    if a:
+        model = a.model_name or "..."
+        cost = f"${{a.cost_usd:.4f}}"
+        ctx = f"{{int(a.context_pct)}}%"
+        tools = a.total_tools
+        elapsed = int(time.time() - a.start_time)
+        mins, secs = divmod(elapsed, 60)
+        hrs, mins = divmod(mins, 60)
+        uptime = f"{{hrs}}h {{mins:02d}}m {{secs:02d}}s" if hrs else f"{{mins}}m {{secs:02d}}s"
+        phase = a.phase
+    else:
+        model, cost, ctx, tools, uptime, phase = "...", "$0.00", "0%", 0, "0m 00s", "waiting"
+
+    # Phase indicator
+    phase_labels = {
+        "waiting": ("💤", "Idle"),
+        "typing": ("✍️", "Typing"),
+        "walking": ("🚶", "Walking to tool"),
+        "action": ("⚙️", "Using tool"),
+        "returning": ("🔙", "Returning"),
+        "asking": ("🤔", "Waiting for approval"),
+    }
+    phase_icon, phase_label = phase_labels.get(phase, ("💤", "Idle"))
+
+    # Context bar
+    ctx_val = int(a.context_pct) if a else 0
+    ctx_color = "#3fb950" if ctx_val < 60 else "#d29922" if ctx_val < 85 else "#f85149"
+
+    # Notify events
     notify_events = json.dumps([e for e in _web_events if e.get("type") in ("Stop", "PermissionRequest")])
+
+    # Activity log entries
+    log_entries = ""
+    type_icons = {"UserPromptSubmit": "📝", "PreToolUse": "⚡", "PostToolUse": "✅", "Stop": "🏁", "PermissionRequest": "❓", "StatusUpdate": "📊"}
+    for e in list(_web_events[-15:])[::-1]:
+        icon = type_icons.get(e.get("type", ""), "•")
+        etype = e.get("type", "")
+        tool = e.get("tool", "")
+        detail = e.get("detail", "")
+        desc = tool if tool else detail if detail else etype
+        log_entries += f'<div class="log-entry"><span class="log-icon">{{icon}}</span><span class="log-type">{{etype}}</span><span class="log-desc">{{desc}}</span></div>'
 
     return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
 <meta http-equiv="refresh" content="2">
-<title>Claude Monitor</title>
+<title>Claude Monitor — {{status_text}}</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ background: #0d1117; color: #c9d1d9; font-family: 'Cascadia Code', 'Fira Code', monospace;
-         display: flex; justify-content: center; align-items: center; min-height: 100vh; }}
-  .container {{ text-align: center; padding: 2rem; }}
-  .logo {{ color: #f85149; font-size: 2rem; margin-bottom: 1rem; }}
-  .status {{ font-size: 1.5rem; margin: 1rem 0; padding: 1rem 2rem; border-radius: 8px;
-            border: 1px solid #30363d; background: #161b22; min-width: 300px; }}
-  .idle {{ color: #8b949e; }}
-  .typing {{ color: #3fb950; }}
-  .tool {{ color: #d29922; }}
-  .done {{ color: #3fb950; }}
-  .asking {{ color: #d29922; }}
-  .tool-name {{ font-size: 0.9rem; color: #8b949e; margin-top: 0.5rem; }}
-  .info {{ color: #3fb950; font-size: 0.8rem; margin-top: 1rem; }}
-  .controls {{ margin-top: 2rem; }}
+  body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Segoe UI', sans-serif; min-height: 100vh; }}
+
+  .header {{ background: linear-gradient(135deg, #1a1e2e 0%, #0d1117 100%);
+             border-bottom: 1px solid #21262d; padding: 1rem 2rem; display: flex;
+             align-items: center; justify-content: space-between; }}
+  .header-left {{ display: flex; align-items: center; gap: 1rem; }}
+  .claude-icon {{ width: 40px; height: 40px; }}
+  .header-title {{ font-size: 1.2rem; font-weight: 600; color: #f0f3f6; }}
+  .header-sub {{ font-size: 0.75rem; color: #8b949e; }}
+  .header-right {{ display: flex; gap: 0.5rem; }}
+
+  .main {{ max-width: 800px; margin: 0 auto; padding: 1.5rem; }}
+
+  .status-card {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+                  padding: 1.5rem; margin-bottom: 1rem; text-align: center; }}
+  .status-icon {{ font-size: 2.5rem; margin-bottom: 0.5rem; }}
+  .status-text {{ font-size: 1.3rem; font-weight: 600; }}
+  .status-tool {{ font-size: 0.85rem; color: #8b949e; margin-top: 0.25rem; font-family: 'Cascadia Code', monospace; }}
+  .idle .status-text {{ color: #8b949e; }}
+  .typing .status-text {{ color: #3fb950; }}
+  .done .status-text {{ color: #3fb950; }}
+  .asking .status-text {{ color: #d29922; }}
+  .tool .status-text {{ color: #d29922; }}
+
+  .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                 gap: 0.75rem; margin-bottom: 1rem; }}
+  .stat-card {{ background: #161b22; border: 1px solid #21262d; border-radius: 10px;
+                padding: 1rem; text-align: center; }}
+  .stat-value {{ font-size: 1.1rem; font-weight: 700; color: #f0f3f6; }}
+  .stat-label {{ font-size: 0.7rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }}
+  .stat-icon {{ font-size: 1.2rem; margin-bottom: 0.25rem; }}
+
+  .ctx-bar {{ background: #21262d; border-radius: 4px; height: 6px; margin-top: 0.5rem; overflow: hidden; }}
+  .ctx-fill {{ height: 100%; border-radius: 4px; transition: width 0.3s; }}
+
+  .phase-badge {{ display: inline-block; background: #21262d; border: 1px solid #30363d;
+                  border-radius: 20px; padding: 0.25rem 0.75rem; font-size: 0.8rem; margin-top: 0.75rem; }}
+
+  .controls {{ background: #161b22; border: 1px solid #21262d; border-radius: 10px;
+               padding: 1rem; margin-bottom: 1rem; display: flex;
+               align-items: center; justify-content: center; gap: 0.75rem; flex-wrap: wrap; }}
   .btn {{ background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 0.5rem 1rem;
-         border-radius: 6px; cursor: pointer; font-family: inherit; margin: 0.25rem; }}
-  .btn:hover {{ background: #30363d; }}
-  .btn.active {{ border-color: #3fb950; color: #3fb950; }}
-  .volume {{ margin-top: 1rem; color: #8b949e; }}
+         border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 0.85rem;
+         transition: all 0.15s; }}
+  .btn:hover {{ background: #30363d; border-color: #484f58; }}
+  .vol-wrap {{ display: flex; align-items: center; gap: 0.5rem; color: #8b949e; font-size: 0.8rem; }}
+  .vol-wrap input {{ width: 80px; accent-color: #f85149; }}
+
+  .activity {{ background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 1rem; }}
+  .activity-title {{ font-size: 0.8rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em;
+                     margin-bottom: 0.75rem; font-weight: 600; }}
+  .log-entry {{ display: grid; grid-template-columns: 24px 140px 1fr; gap: 0.5rem;
+                padding: 0.35rem 0; border-bottom: 1px solid #0d1117; font-size: 0.8rem;
+                align-items: center; }}
+  .log-icon {{ text-align: center; }}
+  .log-type {{ color: #8b949e; font-family: 'Cascadia Code', monospace; font-size: 0.7rem; }}
+  .log-desc {{ color: #c9d1d9; font-family: 'Cascadia Code', monospace; font-size: 0.7rem;
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+
+  .footer {{ text-align: center; padding: 1rem; color: #484f58; font-size: 0.7rem; }}
+  .pulse {{ animation: pulse 2s infinite; }}
+  @keyframes pulse {{ 0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} }}
   .flash {{ animation: flash 0.5s ease-in-out 3; }}
-  @keyframes flash {{ 0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} }}
-  .log {{ margin-top: 1.5rem; text-align: left; max-width: 400px; margin-left: auto; margin-right: auto;
-          font-size: 0.75rem; color: #8b949e; max-height: 150px; overflow-y: auto; }}
-  .log div {{ padding: 2px 0; border-bottom: 1px solid #21262d; }}
+  @keyframes flash {{ 0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.2; }} }}
 </style>
 </head><body>
-<div class="container">
-  <div class="logo">▐▛█▜▌ Claude Monitor</div>
-  <div class="status {status_class}" id="status">{status_text}</div>
-  <div class="tool-name">{tool_text}</div>
+
+<div class="header">
+  <div class="header-left">
+    <svg class="claude-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="#f85149" opacity="0.15"/>
+      <path d="M16.8 8.5c-.3-.5-.8-.8-1.3-.8h-1.2l-1.8 3.5L10.7 7.7H9.5c-.5 0-1 .3-1.3.8L5.5 13.8c-.2.4-.2.8 0 1.2.3.5.8.8 1.3.8h1.2l1.8-3.5 1.8 3.5h1.2c.5 0 1-.3 1.3-.8l2.7-5.3c.2-.4.2-.8 0-1.2z" fill="#f85149"/>
+    </svg>
+    <div>
+      <div class="header-title">Claude Monitor</div>
+      <div class="header-sub">Real-time activity dashboard</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="phase-badge">{{phase_icon}} {{phase_label}}</span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="status-card {{status_class}} {{"flash" if status_class in ("done", "asking") else ""}}">
+    <div class="status-icon">{{status_icon}}</div>
+    <div class="status-text">{{status_text}}</div>
+    {{'<div class="status-tool">' + tool_text + '</div>' if tool_text else ''}}
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-icon">🤖</div>
+      <div class="stat-value">{{model}}</div>
+      <div class="stat-label">Model</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">💰</div>
+      <div class="stat-value">{{cost}}</div>
+      <div class="stat-label">Cost</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">🛠️</div>
+      <div class="stat-value">{{tools}}</div>
+      <div class="stat-label">Tools Used</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">⏱️</div>
+      <div class="stat-value">{{uptime}}</div>
+      <div class="stat-label">Uptime</div>
+    </div>
+    <div class="stat-card" style="grid-column: span 2;">
+      <div class="stat-icon">📊</div>
+      <div class="stat-value">{{ctx}}</div>
+      <div class="stat-label">Context Window</div>
+      <div class="ctx-bar"><div class="ctx-fill" style="width:{{ctx_val}}%;background:{{ctx_color}}"></div></div>
+    </div>
+  </div>
+
   <div class="controls">
     <button class="btn" onclick="testSound()">🎵 Test Sound</button>
     <button class="btn" onclick="enableNotif()">🔔 Enable Notifications</button>
+    <div class="vol-wrap">🔊 <input type="range" id="vol" min="0" max="100" value="50"></div>
   </div>
-  <div class="volume">Volume: <input type="range" id="vol" min="0" max="100" value="50"></div>
-  <div class="info">● Connected — auto-refresh every 2s</div>
-  <div class="log" id="log"></div>
+
+  <div class="activity">
+    <div class="activity-title">📋 Activity Log</div>
+    {{log_entries if log_entries else '<div style="color:#484f58;font-size:0.8rem;padding:0.5rem 0">No events yet...</div>'}}
+  </div>
 </div>
+
+<div class="footer">
+  <span class="pulse">●</span> Auto-refreshing every 2s &nbsp;|&nbsp; Claude Monitor v1.0
+</div>
+
 <script>
-// Sound (persists via sessionStorage)
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 function getVol() {{ return (document.getElementById('vol').value || 50) / 100 * 0.4; }}
-function playTone(freq, dur) {{
+function playTone(f, d) {{
   audioCtx.resume();
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.connect(gain); gain.connect(audioCtx.destination);
-  osc.type = 'sine'; osc.frequency.value = freq;
-  gain.gain.value = getVol();
-  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
-  osc.start(); osc.stop(audioCtx.currentTime + dur);
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.connect(g); g.connect(audioCtx.destination);
+  o.type = 'sine'; o.frequency.value = f; g.gain.value = getVol();
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + d);
+  o.start(); o.stop(audioCtx.currentTime + d);
 }}
 function playCompletion() {{
-  playTone(523, 0.15); setTimeout(() => playTone(659, 0.15), 130); setTimeout(() => playTone(784, 0.25), 260);
+  playTone(523,.15); setTimeout(()=>playTone(659,.15),130); setTimeout(()=>playTone(784,.25),260);
 }}
 function playQuestion() {{
-  playTone(784, 0.2); setTimeout(() => playTone(988, 0.3), 200);
-  setTimeout(() => playTone(784, 0.2), 550); setTimeout(() => playTone(988, 0.4), 750);
+  playTone(784,.2); setTimeout(()=>playTone(988,.3),200);
+  setTimeout(()=>playTone(784,.2),550); setTimeout(()=>playTone(988,.4),750);
 }}
-function testSound() {{ audioCtx.resume().then(() => playCompletion()); }}
+function testSound() {{ audioCtx.resume().then(()=>playCompletion()); }}
 function enableNotif() {{
-  if (Notification.permission === 'default') Notification.requestPermission();
-  sessionStorage.setItem('notif', '1');
+  if (Notification.permission==='default') Notification.requestPermission();
 }}
-
-// Check for new events and play sounds/notifications
-const events = {notify_events};
-const lastPlayed = parseInt(sessionStorage.getItem('lastPlayed') || '0');
-const newEvents = events.filter(e => e.id > lastPlayed);
-
-if (newEvents.length > 0 && sessionStorage.getItem('soundEnabled') !== '0') {{
-  // Only play for the latest event to avoid sound spam
-  const latest = newEvents[newEvents.length - 1];
-  audioCtx.resume().then(() => {{
-    if (latest.type === 'Stop') playCompletion();
-    else if (latest.type === 'PermissionRequest') playQuestion();
+const events = {{notify_events}};
+const lastPlayed = parseInt(sessionStorage.getItem('lp')||'0');
+const nw = events.filter(e=>e.id>lastPlayed);
+if (nw.length>0) {{
+  const l = nw[nw.length-1];
+  audioCtx.resume().then(()=>{{
+    if (l.type==='Stop') playCompletion();
+    else if (l.type==='PermissionRequest') playQuestion();
   }});
-  // Show notification
-  if (Notification.permission === 'granted') {{
-    if (latest.type === 'Stop') new Notification('Claude Monitor', {{ body: 'Response complete' }});
-    else if (latest.type === 'PermissionRequest') new Notification('Claude Monitor', {{ body: 'Approval needed: ' + (latest.tool || '') }});
+  if (Notification.permission==='granted') {{
+    if (l.type==='Stop') new Notification('Claude Monitor',{{body:'Response complete'}});
+    else if (l.type==='PermissionRequest') new Notification('Claude Monitor',{{body:'Approval needed: '+(l.tool||'')}});
   }}
-  sessionStorage.setItem('lastPlayed', String(events[events.length - 1].id));
+  sessionStorage.setItem('lp', String(events[events.length-1].id));
 }}
-
-// Show event log
-const logEl = document.getElementById('log');
-const allEvents = {json.dumps(list(_web_events[-10:]))};
-allEvents.reverse();
-allEvents.forEach(e => {{
-  const div = document.createElement('div');
-  div.textContent = e.type + (e.tool ? ' → ' + e.tool : '') + (e.detail ? ' (' + e.detail + ')' : '');
-  logEl.appendChild(div);
-}});
+// Persist volume across refreshes
+const vol = document.getElementById('vol');
+if (sessionStorage.getItem('v')) vol.value = sessionStorage.getItem('v');
+vol.addEventListener('input', () => sessionStorage.setItem('v', vol.value));
 </script>
 </body></html>
 """
 
-# Web event buffer
+# Web event buffer and animator reference
 _web_events = []
 _web_event_counter = 0
+_web_animator = None
 
 
 def push_web_event(event_type, tool_name="", detail=""):
@@ -1276,8 +1398,10 @@ def main():
     kill_old_instances()
     time.sleep(0.3)
 
+    global _web_animator
     config = load_config()
     animator = ClaudeAnimator(config)
+    _web_animator = animator
 
     def shutdown(sig, frame):
         save_config(animator.config)
